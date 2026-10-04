@@ -1,0 +1,48 @@
+name: erp-migration-accelerator
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: erp_migration_pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-migration}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-migration_dev_pw}
+      POSTGRES_DB: ${POSTGRES_DB:-migration_catalog}
+      # Consumed by docker/initdb/01-create-test-db.sh (runs on first volume init only;
+      # the pytest conftest also creates the test DB on demand).
+      POSTGRES_TEST_DB: ${POSTGRES_TEST_DB:-migration_catalog_test}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    # Tuned for a 2 GB container: ~25% shared_buffers, small connection count.
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "effective_cache_size=1GB"
+      - "-c"
+      - "work_mem=16MB"
+      - "-c"
+      - "maintenance_work_mem=128MB"
+      - "-c"
+      - "max_connections=50"
+    shm_size: 256mb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 2G
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  pgdata:
+    name: erp_migration_pgdata
