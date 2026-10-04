@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="toolbar">
+  <label>Mapping set <select id="mapping-select"></select></label>
+  <button class="btn" id="generate">Generate AI mapping</button>
+  <button class="btn" id="add-rule-toggle">Add manual rule</button>
+  <span class="spacer"></span>
+  <span id="mapping-status"></span>
+  <button class="btn" id="submit-mapping">Submit for approval</button>
+  <button class="btn" id="approve-mapping">Approve</button>
+  <button class="btn primary" id="run-pipeline">Run pipeline</button>
+</div>
+<div id="add-rule" class="card hidden">
+  <h2>Add manual rule</h2>
+  <form id="add-rule-form" class="grid form">
+    <label>Target table<input name="target_table" required placeholder="BUT000"></label>
+    <label>Target column<input name="target_column" required placeholder="BU_GROUP"></label>
+    <label>Rule type
+      <select name="rule_type"><option>STATIC_VALUE</option><option>DIRECT_COPY</option><option>SQL_EXPRESSION</option><option>VALUE_MAPPING</option></select></label>
+    <label>Source column<input name="source_column" placeholder="(not for STATIC_VALUE)"></label>
+    <label class="wide">Expression / literal<input name="transformation_logic" placeholder="'BP01'"></label>
+    <div class="wide"><button class="btn primary" type="submit">Add rule</button></div>
+  </form>
+</div>
+<div class="split">
+  <section class="card pane">
+    <h2>Legacy columns</h2>
+    <div id="legacy"><p class="muted">Loading...</p></div>
+  </section>
+  <section class="card pane wide-pane">
+    <h2>Mapping to SAP Business Partner fields</h2>
+    <div class="legend">
+      <span class="badge green">&gt;85% / approved</span><span class="badge amber">60-85% / needs review</span>
+      <span class="badge red">&lt;60% / blocked</span><span class="badge purple">AI-suggested</span>
+    </div>
+    <div id="rules"><p class="muted">Select or generate a mapping set.</p></div>
+    <div id="unmapped"></div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/js/studio.js"></script>{% endblock %}

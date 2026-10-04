@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} - ERP Migration Accelerator</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">ERP Migration Accelerator</a>
+    <nav aria-label="Primary">
+      <a href="/">Workspace</a>
+      {% if table_id %}<a href="/ui/profiler/{{ table_id }}">Profiler</a><a href="/ui/studio/{{ table_id }}">Mapping Studio</a>{% endif %}
+      {% if run_id %}<a href="/ui/governance/{{ run_id }}">Governance</a><a href="/ui/certificate/{{ run_id }}">Certificate</a>{% endif %}
+      <a href="/docs" target="_blank" rel="noopener">API</a>
+    </nav>
+    <div class="actor">
+      <label for="actor">Acting as</label>
+      <input id="actor" autocomplete="off" placeholder="your user id">
+      <input id="apikey" type="password" autocomplete="off" placeholder="API key (if enabled)">
+    </div>
+  </header>
+  <main class="page" id="page" data-table-id="{{ table_id }}" data-run-id="{{ run_id }}">
+    <h1>{{ title }}</h1>
+    {% block content %}{% endblock %}
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/static/js/common.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

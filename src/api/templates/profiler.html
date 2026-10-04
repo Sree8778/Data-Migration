@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="toolbar">
+  <button class="btn primary" id="run-profile">Run profiling</button>
+  <span class="muted" id="profile-meta"></span>
+</div>
+<div id="summary" class="cards"></div>
+<section class="card">
+  <h2>Column health</h2>
+  <div id="columns"><p class="muted">Loading...</p></div>
+</section>
+<section class="card">
+  <h2>Duplicates &amp; inferred keys</h2>
+  <div id="dupes"><p class="muted">Loading...</p></div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/js/profiler.js"></script>{% endblock %}

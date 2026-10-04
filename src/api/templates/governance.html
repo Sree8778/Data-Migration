@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="gate" class="banner">Loading...</div>
+<div class="toolbar">
+  <button class="btn" id="sync-jira">Sync defects to Jira</button>
+  <button class="btn" id="sign-off">Steward sign-off for load</button>
+  <label>Load as
+    <select id="load-mode">
+      <option value="cockpit">Migration Cockpit workbook</option>
+      <option value="sap:sandbox">SAP sandbox (simulated)</option>
+      <option value="sap:live">SAP live</option>
+    </select></label>
+  <button class="btn primary" id="load">Execute load</button>
+  <a class="btn" href="/ui/certificate/{{ run_id }}">Reconciliation certificate</a>
+</div>
+<section class="card">
+  <h2>Rule-aggregated defects</h2>
+  <div id="defects"><p class="muted">Loading...</p></div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/js/governance.js"></script>{% endblock %}

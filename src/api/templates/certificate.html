@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="verdict" class="banner">Loading...</div>
+<div class="toolbar">
+  <button class="btn" id="dl-cockpit" disabled>Download Cockpit workbook</button>
+  <button class="btn" id="dl-html" disabled>Certificate (HTML)</button>
+  <button class="btn" id="dl-md" disabled>Certificate (Markdown)</button>
+</div>
+<div id="counts" class="cards"></div>
+<section class="card"><h2>Drop-off accounting</h2><div id="dropoff"></div></section>
+<section class="card"><h2>Control checks</h2><div id="checks"></div></section>
+<section class="card"><h2>Cell-lineage sample</h2><div id="lineage"></div></section>
+<section class="card"><h2>Mapping approval</h2><div id="approval"></div></section>
+{% endblock %}
+{% block scripts %}<script src="/static/js/certificate.js"></script>{% endblock %}

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="status-banner" class="banner hidden"></div>
+<section class="card">
+  <h2>Register a legacy source</h2>
+  <form id="register-form" class="grid form" enctype="multipart/form-data">
+    <label>System name<input name="system_name" required placeholder="LEGACY_ORACLE_AR"></label>
+    <label>System type
+      <select name="system_type"><option>FLAT_FILE</option><option>ORACLE</option><option>SAP_ECC</option><option>MSSQL</option></select></label>
+    <label>Table name<input name="table_name" required placeholder="AR_CUSTOMERS"></label>
+    <label>Primary key column(s)<input name="primary_key_columns" placeholder="CUST_ID"></label>
+    <label class="wide">Extract file (.csv or .parquet)<input type="file" name="file" accept=".csv,.parquet" required></label>
+    <div class="wide"><button class="btn primary" type="submit">Register &amp; upload</button></div>
+  </form>
+</section>
+<section class="card">
+  <h2>Source tables</h2>
+  <div id="tables"><p class="muted">Loading...</p></div>
+</section>
+<section class="card">
+  <h2>Migration runs</h2>
+  <div id="runs"><p class="muted">Loading...</p></div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/js/index.js"></script>{% endblock %}
