@@ -1,0 +1,201 @@
+CUST_ID,CUST_NAME,TAX_ID,EMAIL,PHONE,ADDR_STREET,CITY,COUNTRY,POSTAL_CODE,PAYMENT_TERMS
+502181,Kabroju Pharma Co Plant 1 Ltd,,,,512 Pine Street 2181,London,GB,EC1A39,NET30
+502182,Kabroju Pharma Co Plant 2 Ltd,,,,512 Pine Street 2181,London,GB,EC1A39,NET30
+502183,Xidane Motors Co Plant 1 Ltd,,,,449 Lake Lane 2182,Paris,FR,750037,NET30
+502184,Xidane Motors Co Plant 2 Ltd,,,,449 Lake Lane 2182,Paris,FR,750037,NET30
+502185,Fanolove Pharma Plant 1 Inc,,,,637 Elm Road 2183,London,GB,EC1A29,NET60
+502186,Fanolove Pharma Plant 2 Inc,,,,637 Elm Road 2183,London,GB,EC1A29,NET60
+502187,Faminemi Analytics Plant 1 LLC,,,,264 Lake Street 2184,Berlin,DE,101146,NET60
+502188,Faminemi Analytics Plant 2 LLC,,,,264 Lake Street 2184,Berlin,DE,101146,NET60
+502189,Vemigigre Software Plant 1 LLC,,,,289 Oak Street 2185,Leeds,GB,LS1 78,NET30
+502190,Vemigigre Software Plant 2 LLC,,,,289 Oak Street 2185,Leeds,GB,LS1 78,NET30
+502191,Dagitu Textiles Co Plant 1 Ltd,,,,309 Lake Avenue 2186,Berlin,DE,101155,NET30
+502192,Dagitu Textiles Co Plant 2 Ltd,,,,309 Lake Avenue 2186,Berlin,DE,101155,NET30
+502193,Stynoqua Labs Plant 1 Inc,,,,198 Oak Street 2187,London,GB,EC1A20,NET30
+502194,Stynoqua Labs Plant 2 Inc,,,,198 Oak Street 2187,London,GB,EC1A20,NET30
+502195,Xinofa Trading Plant 1 SA,,,,520 Station Lane 2188,Toronto,CA,M5H 59,COD
+502196,Xinofa Trading Plant 2 SA,,,,520 Station Lane 2188,Toronto,CA,M5H 59,COD
+502197,Gibeloka Foods Plant 1 AG,,,,392 Park Lane 2189,Pune,IN,411023,COD
+502198,Gibeloka Foods Plant 2 AG,,,,392 Park Lane 2189,Pune,IN,411023,COD
+502199,Davebro Trading Plant 1 AG,,,,148 Sunset Lane 2190,Berlin,DE,101142,COD
+502200,Davebro Trading Plant 2 AG,,,,148 Sunset Lane 2190,Berlin,DE,101142,COD
+502201,Kakaqua Pharma Plant 1 AG,,,,513 Cedar Road 2191,Munich,DE,803349,NET60
+502202,Kakaqua Pharma Plant 2 AG,,,,513 Cedar Road 2191,Munich,DE,803349,NET60
+502203,Nekaqua Labs Plant 1 Ltd,,,,654 Maple Road 2192,London,GB,EC1A61,NET30
+502204,Nekaqua Labs Plant 2 Ltd,,,,654 Maple Road 2192,London,GB,EC1A61,NET30
+502205,Hosuhora Foods Plant 1 Corp,,,,528 Birch Street 2193,Boston,US,021195,NET60
+502206,Hosuhora Foods Plant 2 Corp,,,,528 Birch Street 2193,Boston,US,021195,NET60
+502207,Tunohove Motors Plant 1 SA,,,,816 Elm Road 2194,Toronto,CA,M5H 49,COD
+502208,Tunohove Motors Plant 2 SA,,,,816 Elm Road 2194,Toronto,CA,M5H 49,COD
+502209,Zotuzoho Textiles Plant 1 GmbH,,,,680 Oak Road 2195,London,GB,EC1A47,NET60
+502210,Zotuzoho Textiles Plant 2 GmbH,,,,680 Oak Road 2195,London,GB,EC1A47,NET60
+502211,Tupevezo Software Plant 1 LLC,,,,367 Mill Lane 2196,Lyon,FR,690055,COD
+502212,Tupevezo Software Plant 2 LLC,,,,367 Mill Lane 2196,Lyon,FR,690055,COD
+502213,Ginexi Systems Co Plant 1 Ltd,,,,582 River Lane 2197,Boston,US,021193,NET60
+502214,Ginexi Systems Co Plant 2 Ltd,,,,582 River Lane 2197,Boston,US,021193,NET60
+502215,Zohone Trading Plant 1 GmbH,,,,846 Cedar Street 2198,Munich,DE,803373,NET30
+502216,Zohone Trading Plant 2 GmbH,,,,846 Cedar Street 2198,Munich,DE,803373,NET30
+502217,Lokamagre Motors Plant 1 Corp,,,,377 Birch Road 2199,Berlin,DE,101146,NET60
+502218,Lokamagre Motors Plant 2 Corp,,,,377 Birch Road 2199,Berlin,DE,101146,NET60
+502219,Gibroho Pharma Plant 1 AG,,,,203 Lake Street 2200,Paris,FR,750048,NET30
+502220,Gibroho Pharma Plant 2 AG,,,,203 Lake Street 2200,Paris,FR,750048,NET30
+502221,Gisugi Logistics Plant 1 GmbH,,,,424 Elm Avenue 2201,Paris,FR,750058,NET60
+502222,Gisugi Logistics Plant 2 GmbH,,,,424 Elm Avenue 2201,Paris,FR,750058,NET60
+502223,Jugremi Pharma Co Plant 1 Ltd,,,,302 Birch Lane 2202,Munich,DE,803337,NET60
+502224,Jugremi Pharma Co Plant 2 Ltd,,,,302 Birch Lane 2202,Munich,DE,803337,NET60
+502225,Brogregregre Systems Co Plant 1 Ltd,,,,343 Maple Road 2203,Toronto,CA,M5H 97,COD
+502226,Brogregregre Systems Co Plant 2 Ltd,,,,343 Maple Road 2203,Toronto,CA,M5H 97,COD
+502227,Magimine Pharma Co Plant 1 Ltd,,,,790 Oak Street 2204,Madrid,ES,280191,COD
+502228,Magimine Pharma Co Plant 2 Ltd,,,,790 Oak Street 2204,Madrid,ES,280191,COD
+502229,Raquasu Logistics Plant 1 Inc,,,,226 Cedar Lane 2205,Madrid,ES,280148,NET60
+502230,Raquasu Logistics Plant 2 Inc,,,,226 Cedar Lane 2205,Madrid,ES,280148,NET60
+502231,Kaquabro Motors Inc,,,,444 Lake Avenue 2206,Austin,US,787029,NET30
+502233,Kaquabro Motors Inc,,,,482 Sunset Lane 2207,Madrid,ES,280140,NET60
+502234,Hopeneka Logistics Ltd,,,,465 Park Road 2208,Austin,US,787075,NET60
+502236,Hopeneka Logistics Ltd,,,,167 River Lane 2209,London,GB,EC1A45,NET60
+502237,Penorasu Industries Ltd,,,,695 Mill Lane 2210,Pune,IN,411096,COD
+502239,Penorasu Industries Ltd,,,,595 Sunset Street 2211,Leeds,GB,LS1 76,NET30
+502240,Nebrolixi Trading Co Ltd,,,,715 Park Avenue 2212,Boston,US,021131,NET60
+502242,Nebrolixi Trading Co Ltd,,,,603 Hill Lane 2213,Pune,IN,411084,COD
+502243,Grequaqua Industries Co Ltd,,,,226 Sunset Lane 2214,Toronto,CA,M5H 67,COD
+502245,Grequaqua Industries Co Ltd,,,,294 Park Street 2215,Leeds,GB,LS1 71,NET30
+502246,Dalipe Energy Corp,,,,558 Sunset Road 2216,Madrid,ES,280162,COD
+502248,Dalipe Energy Corp,,,,650 Elm Avenue 2217,Austin,US,787012,COD
+502249,Xiloda Labs Ltd,,,,621 Cedar Avenue 2218,Berlin,DE,101183,NET60
+502251,Xiloda Labs Ltd,,,,122 Station Lane 2219,Paris,FR,750062,NET30
+502252,Bedafagi Textiles SA,,,,324 Birch Road 2220,London,GB,EC1A73,NET30
+502254,Bedafagi Textiles SA,,,,812 Maple Street 2221,Madrid,ES,280147,NET30
+502255,Vepesu Software LLC,,,,118 Mill Street 2222,Paris,FR,750096,NET60
+502257,Vepesu Software LLC,,,,31 Station Avenue 2223,Berlin,DE,101186,COD
+502258,Bezobroma Motors LLC,,,,611 Market Road 2224,Madrid,ES,280131,COD
+502260,Bezobroma Motors LLC,,,,706 Station Street 2225,Pune,IN,411067,NET30
+502261,Mituquagre Foods SA,,,,60 Sunset Street 2226,London,GB,EC1A16,COD
+502263,Mituquagre Foods SA,,,,799 River Lane 2227,Madrid,ES,280181,NET60
+502264,Lorano Labs Ltd,,,,837 Cedar Lane 2228,London,GB,EC1A48,NET60
+502266,Lorano Labs Ltd,,,,24 Mill Road 2229,Austin,US,787084,NET60
+502267,Raxiquama Textiles SA,,,,665 Birch Street 2230,Toronto,CA,M5H 81,NET30
+502269,Raxiquama Textiles SA,,,,888 Elm Road 2231,Berlin,DE,101156,NET30
+502270,Ximagisty Systems Corp,,,,523 Lake Lane 2232,Paris,FR,750040,NET30
+502272,Ximagisty Systems Corp,,,,88 Elm Street 2233,London,GB,EC1A79,NET60
+502273,Pevejuda Software GmbH,,,,24 Sunset Road 2234,Lyon,FR,690021,NET30
+502275,Pevejuda Software GmbH,,,,689 Maple Avenue 2235,Leeds,GB,LS1 47,NET60
+502276,Grenomami Pharma Ltd,,,,516 Park Avenue 2236,Toronto,CA,M5H 38,NET30
+502278,Grenomami Pharma Ltd,,,,379 Elm Avenue 2237,Leeds,GB,LS1 76,NET30
+502279,Grebrofasty Pharma Ltd,,,,582 Market Street 2238,Munich,DE,803378,NET60
+502281,Grebrofasty Pharma Ltd,,,,484 Market Lane 2239,Toronto,CA,M5H 82,NET60
+502282,Hogrexibro Trading SA,,,,188 Maple Road 2240,Boston,US,021134,NET30
+502284,Hogrexibro Trading SA,,,,741 Cedar Road 2241,London,GB,EC1A55,COD
+502285,Sugresty Analytics Co Ltd,,,,116 Oak Avenue 2242,Toronto,CA,M5H 52,NET30
+502287,Sugresty Analytics Co Ltd,,,,424 River Lane 2243,Austin,US,787041,NET60
+502288,Greraximi Labs LLC,,,,15 Station Street 2244,Austin,US,787066,COD
+502290,Greraximi Labs LLC,,,,263 Pine Avenue 2245,Lyon,FR,690073,NET60
+502291,Ximanosu Motors GmbH,,,,109 Mill Street 2246,Lyon,FR,690036,COD
+502293,Ximanosu Motors GmbH,,,,26 Maple Street 2247,Lyon,FR,690086,NET60
+502294,Bropesty Motors Co Ltd,,,,495 Oak Road 2248,Leeds,GB,LS1 15,NET30
+502296,Bropesty Motors Co Ltd,,,,368 Mill Lane 2249,Madrid,ES,280135,NET30
+502297,Nejune Industries GmbH,,,,819 Pine Avenue 2250,Toronto,CA,M5H 67,COD
+502299,Nejune Industries GmbH,,,,766 Birch Avenue 2251,London,GB,EC1A57,NET60
+502300,Faveda Foods GmbH,,,,693 Maple Avenue 2252,Austin,US,787063,NET30
+502302,Faveda Foods GmbH,,,,508 Market Road 2253,Toronto,CA,M5H 85,NET60
+502303,Fafasu Logistics Co Ltd,,,,828 Maple Street 2254,Berlin,DE,101189,NET30
+502305,Fafasu Logistics Co Ltd,,,,283 Sunset Lane 2255,Leeds,GB,LS1 76,COD
+502306,Bestylo Industries Inc,,,,576 Hill Road 2256,Leeds,GB,LS1 34,NET30
+502308,Bestylo Foods Inc,,,,290 River Street 2257,Munich,DE,803392,COD
+502309,Xisuzo Foods SA,,,,162 Oak Street 2258,Munich,DE,803351,NET60
+502311,Xisuzo Fuels SA,,,,793 Station Road 2259,London,GB,EC1A64,NET60
+502312,Listyhoxi Labs Corp,,,,449 River Avenue 2260,Toronto,CA,M5H 74,NET30
+502314,Listyhoxi Foods Corp,,,,582 Market Street 2261,Leeds,GB,LS1 59,COD
+502315,Styxizo Labs Corp,,,,707 Market Lane 2262,Berlin,DE,101175,NET30
+502317,Styxizo Foods Corp,,,,445 Pine Lane 2263,Berlin,DE,101168,COD
+502318,Pemaraho Motors Ltd,,,,166 Market Road 2264,Pune,IN,411020,NET60
+502320,Pemaraho Foods Ltd,,,,396 Oak Road 2265,Austin,US,787034,COD
+502321,Kabrobe Labs LLC,,,,792 Birch Lane 2266,Pune,IN,411012,NET30
+502323,Kabrobe Foods LLC,,,,807 River Avenue 2267,Toronto,CA,M5H 92,NET60
+502324,Tunoveno Foods Co Ltd,,,,572 Cedar Avenue 2268,Toronto,CA,M5H 87,COD
+502326,Tunoveno Fuels Ltd,,,,155 Market Street 2269,London,GB,EC1A49,NET30
+502327,Perara Foods SA,,,,231 Mill Lane 2270,Madrid,ES,280124,NET30
+502329,Perara Fuels SA,,,,101 Sunset Lane 2271,Madrid,ES,280193,NET60
+502330,Bemisuda Industries Ltd,,,,798 Market Road 2272,Boston,US,021114,COD
+502332,Bemisuda Foods Ltd,,,,110 Station Avenue 2273,Austin,US,787013,NET30
+502333,Fapepezo Foods AG,,,,709 Oak Avenue 2274,London,GB,EC1A45,COD
+502335,Fapepezo Fuels AG,,,,181 Oak Lane 2275,Pune,IN,411077,COD
+502336,Vehomi Pharma Co Ltd,,,,422 Mill Street 2276,Lyon,FR,690085,COD
+502338,Vehomi Foods Ltd,,,,105 Mill Avenue 2277,Berlin,DE,101125,NET60
+502339,Suverama Motors Corp,,,,18 Maple Street 2278,London,GB,EC1A11,NET60
+502341,Suverama Foods Corp,,,,744 Lake Lane 2279,Munich,DE,803313,COD
+502342,Judasu Foods Corp,,,,26 Pine Street 2280,London,GB,EC1A40,COD
+502344,Judasu Fuels Corp,,,,32 River Street 2281,Pune,IN,411070,NET60
+502345,Benestyfa Energy Inc,,,,875 Cedar Street 2282,Pune,IN,411070,NET30
+502347,Benestyfa Foods Inc,,,,887 Birch Lane 2283,Leeds,GB,LS1 51,NET30
+502348,Suveve Foods Co Ltd,,,,420 Lake Road 2284,Boston,US,021144,COD
+502350,Suveve Fuels Ltd,,,,451 Pine Avenue 2285,Madrid,ES,280143,COD
+502351,Styquane Foods LLC,,,,272 Maple Lane 2286,Madrid,ES,280115,NET60
+502353,Styquane Fuels LLC,,,,233 Maple Avenue 2287,Paris,FR,750016,NET30
+502354,Ralobro Software AG,,,,704 Hill Road 2288,Toronto,CA,M5H 10,NET60
+502356,Ralobro Foods AG,,,,451 Lake Lane 2289,Berlin,DE,101127,NET60
+502357,Vequabrope Trading SA,,,,339 Elm Road 2290,Berlin,DE,101140,NET60
+502359,Vequabrope Foods SA,,,,428 Cedar Lane 2291,Pune,IN,411088,NET30
+502360,Greloli Software AG,,,,343 Oak Lane 2292,Austin,US,787038,NET60
+502362,Greloli Foods AG,,,,537 Pine Road 2293,Berlin,DE,101116,NET60
+502363,Turapezo Textiles Inc,,,,878 Birch Road 2294,Boston,US,021156,NET60
+502365,Turapezo Foods Inc,,,,110 Birch Road 2295,Toronto,CA,M5H 43,COD
+502366,Xilidara Motors Co Ltd,,,,800 River Road 2296,Boston,US,021128,COD
+502368,Xilidara Foods Ltd,,,,338 Park Road 2297,Boston,US,021197,NET30
+502369,Kaginebro Foods Co Ltd,,,,591 Park Street 2298,Munich,DE,803346,NET60
+502371,Kaginebro Fuels Ltd,,,,125 Sunset Street 2299,Pune,IN,411023,NET60
+502372,Kafali Motors SA,,,,741 Hill Lane 2300,Austin,US,787095,NET60
+502374,Kafali Foods SA,,,,843 Elm Road 2301,Pune,IN,411089,COD
+502375,Stygreka Labs SA,,,,724 Cedar Lane 2302,Austin,US,787043,NET30
+502377,Stygreka Foods SA,,,,122 Sunset Street 2303,Leeds,GB,LS1 36,COD
+502378,Lokakada Motors Corp,,,,178 River Lane 2304,London,GB,EC1A32,NET60
+502380,Lokakada Foods Corp,,,,559 Elm Lane 2305,Paris,FR,750027,NET60
+502381,Minoli Labs GmbH,,,,71 Birch Road 2306,Boston,US,021137,NET60
+502382,Minoli Labs GmbH,,,,73 Birch Road 2306,Boston,US,021137,NET60
+502383,Gipebe Trading Inc,,,,377 River Street 2307,Berlin,DE,101195,NET30
+502384,Gipebe Trading Inc,,,,379 River Street 2307,Berlin,DE,101195,NET30
+502385,Loramili Trading Co Ltd,,,,728 Cedar Street 2308,Lyon,FR,690067,NET30
+502386,Loramili Trading Co Ltd,,,,730 Cedar Street 2308,Lyon,FR,690067,NET30
+502387,Kakagremi Trading AG,,,,403 Lake Lane 2309,Boston,US,021194,NET30
+502388,Kakagremi Trading AG,,,,405 Lake Lane 2309,Boston,US,021194,NET30
+502389,Vebegrera Foods SA,,,,368 Station Road 2310,Austin,US,787036,NET30
+502390,Vebegrera Foods SA,,,,370 Station Road 2310,Austin,US,787036,NET30
+502391,Hozogi Pharma SA,,,,852 Lake Road 2311,Pune,IN,411010,NET60
+502392,Hozogi Pharma SA,,,,854 Lake Road 2311,Pune,IN,411010,NET60
+502393,Tudajube Logistics SA,,,,649 Cedar Avenue 2312,Boston,US,021124,COD
+502394,Tudajube Logistics SA,,,,651 Cedar Avenue 2312,Boston,US,021124,COD
+502395,Lohone Foods LLC,,,,635 Pine Road 2313,Lyon,FR,690096,NET30
+502396,Lohone Foods LLC,,,,637 Pine Road 2313,Lyon,FR,690096,NET30
+502397,Lizomine Textiles Ltd,,,,496 Market Road 2314,Berlin,DE,101125,COD
+502398,Lizomine Textiles Ltd,,,,498 Market Road 2314,Berlin,DE,101125,COD
+502399,Sudasty Energy Inc,,,,78 Cedar Street 2315,Leeds,GB,LS1 78,COD
+502400,Sudasty Energy Inc,,,,80 Cedar Street 2315,Leeds,GB,LS1 78,COD
+502401,Tuvegiqua Software Inc,,,,571 Lake Lane 2316,Berlin,DE,101127,NET30
+502402,Tuvegiqua Software Inc,,,,573 Lake Lane 2316,Berlin,DE,101127,NET30
+502403,Julofa Systems AG,,,,261 Maple Street 2317,Madrid,ES,280193,COD
+502404,Julofa Systems AG,,,,263 Maple Street 2317,Madrid,ES,280193,COD
+502405,Vequakagi Trading Ltd,,,,101 Mill Street 2318,Pune,IN,411093,NET30
+502406,Vequakagi Trading Ltd,,,,103 Mill Street 2318,Pune,IN,411093,NET30
+502407,Nefajuju Labs Corp,,,,799 Pine Road 2319,Berlin,DE,101142,COD
+502408,Nefajuju Labs Corp,,,,801 Pine Road 2319,Berlin,DE,101142,COD
+502409,Horatubro Systems Inc,,,,612 Mill Road 2320,Lyon,FR,690078,NET60
+502410,Horatubro Systems Inc,,,,614 Mill Road 2320,Lyon,FR,690078,NET60
+502411,Tumanema Systems GmbH,,,,360 Lake Road 2321,Paris,FR,750048,NET30
+502412,Tumanema Systems GmbH,,,,362 Lake Road 2321,Paris,FR,750048,NET30
+502413,Hobeli Foods Inc,,,,189 Maple Road 2322,London,GB,EC1A33,COD
+502414,Hobeli Foods Inc,,,,191 Maple Road 2322,London,GB,EC1A33,COD
+502415,Lozono Labs Co Ltd,,,,291 Mill Street 2323,Boston,US,021147,NET30
+502416,Lozono Labs Co Ltd,,,,293 Mill Street 2323,Boston,US,021147,NET30
+502417,Kajuzove Energy Co Ltd,,,,615 Elm Street 2324,Munich,DE,803375,NET30
+502418,Kajuzove Energy Co Ltd,,,,617 Elm Street 2324,Munich,DE,803375,NET30
+502419,Jubrone Trading Ltd,,,,634 Oak Lane 2325,Lyon,FR,690046,NET60
+502420,Jubrone Trading Ltd,,,,636 Oak Lane 2325,Lyon,FR,690046,NET60
+502421,Xiquaqua Trading SA,,,,529 Cedar Lane 2326,Munich,DE,803375,NET60
+502422,Xiquaqua Trading SA,,,,531 Cedar Lane 2326,Munich,DE,803375,NET60
+502423,Dagreveli Labs AG,,,,192 Oak Road 2327,Berlin,DE,101127,NET30
+502424,Dagreveli Labs AG,,,,194 Oak Road 2327,Berlin,DE,101127,NET30
+502425,Gistygi Foods AG,,,,786 Park Lane 2328,Toronto,CA,M5H 70,NET60
+502426,Gistygi Foods AG,,,,788 Park Lane 2328,Toronto,CA,M5H 70,NET60
+502427,Julisty Labs AG,,,,27 Oak Lane 2329,Pune,IN,411088,NET30
+502428,Julisty Labs AG,,,,29 Oak Lane 2329,Pune,IN,411088,NET30
+502429,Nedape Software Co Ltd,,,,64 Market Street 2330,Munich,DE,803387,COD
+502430,Nedape Software Co Ltd,,,,66 Market Street 2330,Munich,DE,803387,COD

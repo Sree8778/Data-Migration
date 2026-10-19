@@ -7,6 +7,10 @@ Nothing the LLM returns is trusted. A recommendation is checked for:
      and only references to known source columns;
   3. confidence >= threshold and no check failed, otherwise the rule is flagged NEEDS_REVIEW.
 
+Beyond the structure, the guardrails look at EVIDENCE when the source column is known: a copied column
+whose values are longer than the SAP field, or whose sample values are not keys of the field's SAP check
+table (a country written "Germany" going into a field that holds "DE"), is flagged for a human.
+
 A rule whose target cannot be resolved, or whose required SQL is missing/unsafe, is not
 `persistable`: it cannot be stored in `map_field_rules` without breaking its constraints (or
 without storing unsafe text), so the orchestrator reports it instead.
@@ -27,9 +31,11 @@ from src.db.models import CatColumn, CatDataSource, CatTable
 from src.schemas.mapping_ai import (
     FieldMappingRecommendation,
     ReviewStatus,
+    SourceColumnContext,
     TargetCandidate,
     ValidationResult,
 )
+from src.services.domain_provider import DomainProvider, default_domain_provider
 
 REVIEW_CONFIDENCE_THRESHOLD = 0.60
 MAX_SQL_LENGTH = 1000
@@ -120,11 +126,13 @@ class RuleValidator:
         object_name: str = "BUSINESS_PARTNER",
         review_threshold: float = REVIEW_CONFIDENCE_THRESHOLD,
         dialect: Optional[str] = None,
+        domain_provider: Optional[DomainProvider] = None,
     ) -> None:
         self._session_factory = session_factory
         self._object_name = object_name
         self._threshold = review_threshold
         self._dialect = dialect
+        self._domains = domain_provider or default_domain_provider()
 
     @property
     def object_name(self) -> str:
@@ -136,6 +144,7 @@ class RuleValidator:
         *,
         allowed_source_columns: Optional[Iterable[str]] = None,
         candidates: Optional[list[TargetCandidate]] = None,
+        source: Optional[SourceColumnContext] = None,
     ) -> ValidationResult:
         reasons: list[str] = []
         persistable = True
@@ -177,7 +186,11 @@ class RuleValidator:
             if rec.rule_type == "VALUE_MAPPING":
                 reasons.append("value lookups are not defined yet")
 
-        # Check 3: confidence.
+        # Check 3: evidence from the source column's profile against the target's length and check table.
+        if source is not None and target is not None:
+            reasons += self._evidence_reasons(rec, target, source)
+
+        # Check 4: confidence.
         if rec.confidence_score < self._threshold:
             reasons.append(f"confidence {rec.confidence_score:.2f} below {self._threshold:.2f}")
 
@@ -190,6 +203,23 @@ class RuleValidator:
             transformation_sql=sql_out,
             reasons=reasons,
         )
+
+    def _evidence_reasons(self, rec: FieldMappingRecommendation, target: CatColumn, source: SourceColumnContext) -> list[str]:
+        """Facts about the data that contradict a plain copy. A lookup or an expression is trusted to change the values, so only
+        DIRECT_COPY is checked here; the sample dry-run (`MappingPreflightService`) tests every rule type on real rows."""
+        if rec.rule_type != "DIRECT_COPY":
+            return []
+        out: list[str] = []
+        if target.char_max_length and source.char_max_length and source.char_max_length > target.char_max_length:
+            out.append(f"source values reach {source.char_max_length} characters but {target.column_name} holds {target.char_max_length}")
+        if target.check_table and source.evidence_values:
+            domain = self._domains.get_domain(target.check_table)
+            if domain is not None:
+                values = [v.strip() for v in source.evidence_values if v and v.strip()]
+                valid = [v for v in values if v in domain or v.upper() in domain]
+                if values and len(valid) < len(values):
+                    out.append(f"only {len(valid)} of {len(values)} sample values are valid {target.check_table} keys, so a lookup may be needed")
+        return out
 
     def _find_target(self, table_name: str, column_name: str) -> Optional[CatColumn]:
         with self._session_factory() as session:

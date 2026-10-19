@@ -24,6 +24,8 @@ from src.services.metadata_service import NotFoundError
 from src.services.profiler_service import _mask_shape  # same shape mask as the catalog samples
 
 HIGH, MEDIUM = 0.85, 0.60  # confidence / health thresholds shared by badges everywhere
+# Identifiers that SAP or the loader generates; every other mandatory field, key fields included, must be supplied.
+GENERATED_KEYS = {"PARTNER", "KUNNR", "ADDRNUMBER", "RLTYP"}
 
 
 def band_for(score: float) -> Band:
@@ -35,6 +37,11 @@ def band_for(score: float) -> Band:
 
 # ------------------------------------------------------------------ column health
 _PATTERN_FLAGS = {"email": "EMAIL_PATTERN", "iso_country_2": "COUNTRY_ISO_PATTERN", "postal_code": "POSTAL_PATTERN"}
+_PATTERN_HINTS = {
+    "email": re.compile(r"MAIL", re.IGNORECASE),
+    "iso_country_2": re.compile(r"COUNTRY|CTRY|NATION|LAND", re.IGNORECASE),
+    "postal_code": re.compile(r"POST|ZIP|PLZ|PIN", re.IGNORECASE),
+}
 
 
 def column_health(p: ColumnProfile, pii_masked: bool) -> ColumnHealth:
@@ -53,7 +60,9 @@ def column_health(p: ColumnProfile, pii_masked: bool) -> ColumnHealth:
         flags.append("NEAR_UNIQUE_KEY")
     for key, flag in _PATTERN_FLAGS.items():
         c = p.conformity.get(key)
-        if c and c.checked and 0.5 <= c.ratio < 1.0:  # mostly conforms: the rest are likely errors
+        # only for columns whose NAME says what they hold (a payment-terms column is not a postal code),
+        # and only when a meaningful share conforms: the rest are then likely errors
+        if c and c.checked and _PATTERN_HINTS[key].search(p.column_name) and 0.2 <= c.ratio < 1.0:
             flags.append(f"{flag}_VIOLATIONS")
             score -= 20.0 * (1.0 - c.ratio)
     score = round(max(0.0, min(100.0, score)), 1)
@@ -112,13 +121,15 @@ def rule_detail(session: Session, rule: MapFieldRule) -> RuleDetail:
     )
 
 
-def mapping_summary(session: Session, mapping: MapTableRule) -> MappingSetSummary:
+def mapping_summary(session: Session, mapping: MapTableRule, archive: Optional[dict] = None) -> MappingSetSummary:
+    entry = (archive or {}).get(mapping.id) or {}
     target_table = session.get(CatTable, mapping.target_table_id)
     count = session.scalar(select(func.count()).select_from(MapFieldRule).where(MapFieldRule.mapping_set_id == mapping.id))
     return MappingSetSummary(
         mapping_set_id=mapping.id, source_table_id=mapping.source_table_id, target_table=target_table.table_name,
         version=mapping.version, status=mapping.status.value, created_by=mapping.created_by,
         approved_by=mapping.approved_by, approved_at=mapping.approved_at, rule_count=int(count or 0),
+        archived=bool(entry), archive_reason=entry.get("reason"), archived_by=entry.get("archived_by"),
     )
 
 
@@ -135,12 +146,15 @@ def mapping_detail(ctx: AppContext, mapping_set_id: int) -> MappingDetail:
         source_cols = session.scalars(
             select(CatColumn).where(CatColumn.table_id == mapping.source_table_id)
             .order_by(CatColumn.ordinal_position, CatColumn.id)).all()
+        in_file = ctx.file_columns(mapping.source_table_id)  # None when no file is landed (offer the catalog as is)
+        shown = [c for c in source_cols if in_file is None or c.column_name.lower() in in_file or c.column_name in mapped_sources]
         views = [SourceColumnView(
+            missing_from_file=in_file is not None and c.column_name.lower() not in in_file,
             column_name=c.column_name, data_type=c.data_type,
             null_ratio=float(c.null_ratio) if c.null_ratio is not None else None,
             distinct_ratio=float(c.distinct_ratio) if c.distinct_ratio is not None else None,
             sample_values=[str(v) for v in (c.sample_values or [])][:3], mapped=c.column_name in mapped_sources,
-        ) for c in source_cols]
+        ) for c in shown]
 
         object_name = session.get(CatTable, mapping.target_table_id).business_object
         unmapped = [
@@ -149,9 +163,27 @@ def mapping_detail(ctx: AppContext, mapping_set_id: int) -> MappingDetail:
                 .join(CatColumn, CatColumn.table_id == CatTable.id)
                 .join(CatDataSource, CatTable.source_id == CatDataSource.id)
                 .where(CatDataSource.target_type == TargetType.TARGET, CatTable.business_object == object_name,
-                       CatColumn.is_mandatory.is_(True), CatColumn.is_primary_key.is_(False))
+                       CatColumn.is_mandatory.is_(True), CatColumn.column_name.not_in(GENERATED_KEYS))
                 .order_by(CatTable.id, CatColumn.ordinal_position))
             if cid not in mapped_targets
         ]
-        return MappingDetail(mapping=mapping_summary(session, mapping), rules=details, source_columns=views,
+        return MappingDetail(mapping=mapping_summary(session, mapping, ctx.archive.entries()), rules=details, source_columns=views,
                              unmapped_mandatory_targets=unmapped)
+
+
+# ------------------------------------------------------------------ pre-submission check
+def run_preflight(ctx: AppContext, mapping_set_id: int, sample_rows: int = 2000, block_rate: float = 0.5, warn_rate: float = 0.05):
+    """Run the pre-submission check on the landed file, keep the result where the approver finds it, and return it."""
+    with ctx.session_factory() as session:
+        mapping = session.get(MapTableRule, mapping_set_id)
+        if mapping is None:
+            raise NotFoundError(f"mapping set {mapping_set_id} does not exist")
+        source_table_id = mapping.source_table_id
+    unmapped = mapping_detail(ctx, mapping_set_id).unmapped_mandatory_targets
+    report = ctx.preflight.check(
+        mapping_set_id, ctx.source_file(source_table_id), sample_rows=sample_rows, block_rate=block_rate, warn_rate=warn_rate,
+        file_columns=ctx.file_columns(source_table_id), unmapped_mandatory=unmapped)
+    path = ctx.preflight_file(mapping_set_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(report.model_dump_json(indent=1), encoding="utf-8")
+    return report

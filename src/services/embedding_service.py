@@ -175,9 +175,13 @@ class EmbeddingService:
 
     # ------------------------------------------------------------------ retrieval
     def get_top_k_candidates(
-        self, source_column_name: str, source_data_type: str, top_k: int = 5
+        self, source_column_name: str, source_data_type: str, top_k: int = 5, sample_values: Optional[list[str]] = None,
     ) -> list[TargetCandidate]:
-        """Top-k target columns by cosine similarity (scores in [-1, 1], best first)."""
+        """Top-k target columns by cosine similarity (scores in [-1, 1], best first).
+
+        Cryptic legacy names (ORT01, PSTLZ, LAND1) mean nothing to an embedding model, so a few sample values
+        are appended to the query ("ort01, e.g. Berlin, Dresden"). They are embedded locally and never leave
+        the machine; values the PII policy masks arrive here already masked."""
         if top_k < 1:
             raise ValueError("top_k must be >= 1")
         if self._matrix is None:
@@ -185,10 +189,26 @@ class EmbeddingService:
         # `source_data_type` is not embedded (see _IndexedColumn.document); it is part of the
         # LLM prompt, where type compatibility is judged.
         query = normalise_identifier(source_column_name)
-        vector = self._encoder.encode([query], is_query=True)[0]
-        scores = self._matrix @ vector  # rows are unit-length -> dot product == cosine
-        # Stable ordering: score desc, then catalog order, so results are reproducible.
-        order = sorted(range(len(scores)), key=lambda i: (-float(scores[i]), i))[:top_k]
+        samples = [str(v).strip() for v in (sample_values or []) if str(v).strip()][:5]
+
+        def ranking(text: str) -> tuple[list[int], np.ndarray]:
+            scores = self._matrix @ self._encoder.encode([text], is_query=True)[0]  # rows are unit-length -> dot == cosine
+            # Stable ordering: score desc, then catalog order, so results are reproducible.
+            return sorted(range(len(scores)), key=lambda i: (-float(scores[i]), i)), scores
+
+        by_name, scores = ranking(query)
+        order = by_name[:top_k]
+        if samples:  # interleave the name-only ranking with the sample-aware one: samples rescue cryptic names, names rescue odd samples
+            by_samples, sample_scores = ranking(f"{query}, e.g. {', '.join(samples)}")
+            scores = np.maximum(scores, sample_scores)
+            order = []
+            for a_, b_ in zip(by_name, by_samples):
+                for i in (a_, b_):
+                    if i not in order:
+                        order.append(i)
+                if len(order) >= top_k:
+                    break
+            order = order[:top_k]
         return [
             TargetCandidate(
                 column_id=c.column_id,

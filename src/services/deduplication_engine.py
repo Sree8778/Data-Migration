@@ -7,8 +7,9 @@ Phase 2 (fuzzy)          Normalised name (+ address) compared with rapidfuzz. Ca
                          block with vectorised `rapidfuzz.process.cdist`. A pair matches when the
                          name similarity AND the weighted name+address score are >= threshold
                          (0.88). If either record has no address, the name alone decides. Digit tokens in the names
-                         (and, when both exist, in the addresses) must be identical: "Plant 1" and
-                         "Plant 2", or two house numbers, are different entities, not typos.
+                         must be identical ("Plant 1" and "Plant 2" are different entities, not typos). In the
+                         addresses the numbers (house no., postal code) must not CONFLICT: two different house
+                         numbers are different sites, but a number that one record simply lacks is missing data.
 Clustering               Links from both phases are merged with scipy connected components, so a
                          cluster can mix exact and fuzzy evidence (chains A~B~C are merged).
 Golden record            The member with the most populated columns survives; ties go to the
@@ -22,6 +23,7 @@ Output = the input staging columns + `dedup_cluster_id`, `is_duplicate_child`,
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -41,6 +43,7 @@ _MAX_SAMPLES = 20
 LEGAL_SUFFIXES = (
     "INC", "INCORPORATED", "LLC", "LLP", "LP", "LTD", "LIMITED", "CORP", "CORPORATION", "CO", "COMPANY",
     "GMBH", "AG", "KG", "SA", "SAS", "SARL", "BV", "NV", "PLC", "PTE", "PVT", "PRIVATE", "OY", "AB", "SPA", "SRL",
+    "KK", "SL",
 )
 _ADDRESS_ABBREVIATIONS = (
     ("STREET", "ST"), ("STRASSE", "ST"), ("STR", "ST"), ("AVENUE", "AVE"), ("ROAD", "RD"),
@@ -52,21 +55,33 @@ def _digits(text: str) -> tuple[str, ...]:
     return tuple(re.findall(r"\d+", text))
 
 
+_PLACEHOLDER_IDS = ("NONE", "NULL", "NA", "NOTAPPLICABLE", "UNKNOWN", "TBD", "PENDING", "APPLIEDFOR", "TEST", "DUMMY")
+
+
 def _key_component(column: str, kind: str) -> str:
+    """Normalised key value, or NULL when the value cannot identify anyone: an e-mail that is not an address,
+    a phone number with fewer than 6 digits or one repeated digit, a tax id that is too short, one repeated
+    character or a known placeholder. Such values are shared by unrelated records and must never link them."""
     c = f"CAST({q(column)} AS VARCHAR)"
     if kind == "alnum":
-        expr = f"upper(regexp_replace({c}, '[^A-Za-z0-9]', '', 'g'))"
+        v = f"upper(regexp_replace({c}, '[^A-Za-z0-9]', '', 'g'))"
+        valid = f"length({v}) >= 5 AND {v} <> repeat(left({v}, 1), length({v})) AND {v} NOT IN ({', '.join(repr(x) for x in _PLACEHOLDER_IDS)})"
+        expr = f"CASE WHEN {valid} THEN {v} END"
     elif kind == "email":
-        expr = f"lower(trim({c}))"
+        v = f"lower(trim({c}))"
+        expr = f"CASE WHEN regexp_full_match({v}, '[^@\\s]+@[^@\\s]+\\.[a-z]{{2,}}') THEN {v} END"
     elif kind == "digits":
-        expr = f"regexp_replace({c}, '[^0-9]', '', 'g')"
+        v = f"regexp_replace({c}, '[^0-9]', '', 'g')"
+        expr = f"CASE WHEN length({v}) >= 6 AND {v} <> repeat(left({v}, 1), length({v})) THEN {v} END"
     else:
         expr = f"upper(regexp_replace(trim({c}), '\\s+', ' ', 'g'))"
     return f"nullif({expr}, '')"
 
 
 def _name_norm_sql(column: str) -> str:
-    base = f"trim(regexp_replace(regexp_replace(upper(CAST({q(column)} AS VARCHAR)), '[^\\p{{L}}\\p{{N}} ]', ' ', 'g'), '\\s+', ' ', 'g'))"
+    # periods are dropped (L.L.C. -> LLC, K.K. -> KK) before other punctuation becomes a space
+    undotted = f"regexp_replace(upper(CAST({q(column)} AS VARCHAR)), '\\.', '', 'g')"
+    base = f"trim(regexp_replace(regexp_replace({undotted}, '[^\\p{{L}}\\p{{N}} ]', ' ', 'g'), '\\s+', ' ', 'g'))"
     stripped = base
     suffixes = "|".join(LEGAL_SUFFIXES)
     for _ in range(3):  # repeated: "CO LTD" needs two passes
@@ -116,10 +131,13 @@ class DeduplicationEngine:
             edge_reason: list[np.ndarray] = []
             reasons: list[str] = []
             exact_counts: dict[str, int] = {}
+            ignored_keys: dict[str, int] = {}
 
             for key in config.exact_keys:  # ---- phase 1
-                a, b = self._exact_edges(con, key, eligible_sql)
+                a, b, ignored = self._exact_edges(con, key, eligible_sql, config.max_key_group)
                 exact_counts[key.name] = int(len(a))
+                if ignored:
+                    ignored_keys[key.name] = ignored
                 if len(a):
                     reasons.append(f"EXACT:{key.name}")
                     edges_a.append(a); edges_b.append(b)
@@ -165,6 +183,7 @@ class DeduplicationEngine:
             exact_match_clusters=summary["exact_clusters"],
             fuzzy_match_clusters=summary["fuzzy_clusters"],
             exact_edges_by_key=exact_counts,
+            ignored_shared_keys=ignored_keys,
             fuzzy_pairs_evaluated=int(evaluated),
             fuzzy_pairs_matched=matched_pairs,
             samples=summary["samples"],
@@ -192,17 +211,20 @@ class DeduplicationEngine:
 
     # ------------------------------------------------------------------ phase 1
     @staticmethod
-    def _exact_edges(con, key: ExactKey, eligible_sql: str) -> tuple[np.ndarray, np.ndarray]:
+    def _exact_edges(con, key: ExactKey, eligible_sql: str, max_group: int) -> tuple[np.ndarray, np.ndarray, int]:
+        """Link rows sharing a valid key value. A value shared by more than `max_group` rows is a placeholder
+        (a group mailbox, 'n/a'), not a person: it links nobody and is counted instead."""
         parts = [_key_component(c, key.normalizer) for c in key.columns]
         any_null = " OR ".join(f"{p} IS NULL" for p in parts)
         joined = ", ".join(parts)
-        data = con.execute(
-            f'SELECT a, b FROM (SELECT "__id" AS b, min("__id") OVER w AS a, count(*) OVER w AS c FROM ('
+        con.execute(
+            f'CREATE OR REPLACE TEMP TABLE kv AS SELECT "__id", k, min("__id") OVER w AS a, count(*) OVER w AS c FROM ('
             f'SELECT "__id", CASE WHEN {any_null} THEN NULL ELSE concat_ws(chr(31), {joined}) END AS k '
-            f"FROM stg WHERE {eligible_sql}) WHERE k IS NOT NULL WINDOW w AS (PARTITION BY k)) "
-            f"WHERE c > 1 AND a <> b"
-        ).fetchnumpy()
-        return data["a"].astype(np.int64), data["b"].astype(np.int64)
+            f"FROM stg WHERE {eligible_sql}) WHERE k IS NOT NULL WINDOW w AS (PARTITION BY k)"
+        )
+        ignored = int(con.execute(f"SELECT count(DISTINCT k) FROM kv WHERE c > {int(max_group)}").fetchone()[0])
+        data = con.execute(f'SELECT a, "__id" AS b FROM kv WHERE c > 1 AND c <= {int(max_group)} AND a <> "__id"').fetchnumpy()
+        return data["a"].astype(np.int64), data["b"].astype(np.int64), ignored
 
     # ------------------------------------------------------------------ phase 2
     def _fuzzy_edges(self, con, config: DedupConfig, eligible_sql: str) -> tuple[np.ndarray, np.ndarray, int]:
@@ -236,9 +258,15 @@ class DeduplicationEngine:
                             continue  # "Plant 1" vs "Plant 2": numbers are identity, not typos
                         name_score = float(scores[r, c])
                         if addrs[i] and addrs[j]:
-                            if _digits(addrs[i]) != _digits(addrs[j]):
-                                continue  # different house number / postal code = different site
-                            combined = weight * name_score + (1 - weight) * fuzz.token_sort_ratio(addrs[i], addrs[j])
+                            if _digits(addrs[i]) == _digits(addrs[j]):
+                                address_score = fuzz.token_sort_ratio(addrs[i], addrs[j])
+                            else:
+                                di, dj = Counter(_digits(addrs[i])), Counter(_digits(addrs[j]))  # multisets: "78 ... LS1 78" is not "80 ... LS1 78"
+                                if di - dj and dj - di:
+                                    continue  # a different house number / postal code = a different site
+                                # one record merely lacks a number (postal code, house no.): missing is not conflicting
+                                address_score = fuzz.token_set_ratio(addrs[i], addrs[j])
+                            combined = weight * name_score + (1 - weight) * address_score
                         else:
                             combined = name_score
                         if combined >= threshold:

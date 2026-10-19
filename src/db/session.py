@@ -3,15 +3,41 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.db.models import Base
 
-DEFAULT_DATABASE_URL = "postgresql+psycopg2://migration:migration_dev_pw@localhost:5432/migration_catalog"
+
+def _load_dotenv() -> None:
+    for candidate in (Path(".env"), Path(__file__).resolve().parent.parent.parent / ".env"):
+        if candidate.is_file():
+            try:
+                for line in candidate.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, _, v = line.partition("=")
+                    k, v = k.strip(), v.strip().strip("'\"")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+            except Exception:
+                pass
+            break
+
+
+_load_dotenv()
+
+
+def _default_port() -> str:
+    return os.environ.get("POSTGRES_PORT", "5432")
+
+
+DEFAULT_DATABASE_URL = f"postgresql+psycopg2://migration:migration_dev_pw@localhost:{_default_port()}/migration_catalog"
 DEFAULT_TEST_DATABASE_URL = (
-    "postgresql+psycopg2://migration:migration_dev_pw@localhost:5432/migration_catalog_test"
+    f"postgresql+psycopg2://migration:migration_dev_pw@localhost:{_default_port()}/migration_catalog_test"
 )
 
 
@@ -21,6 +47,8 @@ def get_database_url() -> str:
 
 def get_test_database_url() -> str:
     return os.environ.get("TEST_DATABASE_URL", DEFAULT_TEST_DATABASE_URL)
+
+
 
 
 def create_db_engine(url: str | None = None) -> Engine:

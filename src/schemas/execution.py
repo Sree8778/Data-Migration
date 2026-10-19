@@ -89,6 +89,8 @@ class DedupConfig(_Model):
     exact_keys: list[ExactKey] = Field(default_factory=list)
     name_column: Optional[str] = None
     address_columns: list[str] = Field(default_factory=list)
+    # A key value shared by more records than this is a placeholder or group mailbox, not one entity: it links nobody.
+    max_key_group: int = Field(default=25, ge=2)
     fuzzy_threshold: float = Field(default=0.88, ge=0.0, le=1.0)
     name_weight: float = Field(default=0.65, gt=0.0, lt=1.0)
     max_block_size: int = Field(default=2000, ge=2)
@@ -119,6 +121,7 @@ class DedupReport(_Model):
     exact_match_clusters: int
     fuzzy_match_clusters: int
     exact_edges_by_key: dict[str, int]
+    ignored_shared_keys: dict[str, int] = Field(default_factory=dict)  # key name -> distinct values skipped as placeholders
     fuzzy_pairs_evaluated: int
     fuzzy_pairs_matched: int
     samples: list[ClusterSample]

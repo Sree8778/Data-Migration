@@ -9,8 +9,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from src.api.context import NotConfiguredError
+from src.api.exceptions import NotConfiguredError, PreflightBlockedError
 from src.services.cockpit_generator import CockpitConsistencyError
+from src.services.construction_service import ConstructionInputError, ConstructionStateError
 from src.services.execution_orchestrator import ExecutionError
 from src.services.governance_service import (
     GateBlockedError,
@@ -18,6 +19,7 @@ from src.services.governance_service import (
     NotAuthorizedError,
     SegregationOfDutiesError,
 )
+from src.services.gemini_key_manager import AllApiKeysExhaustedError, KeyAlreadyRegisteredError, NoApiKeysConfiguredError
 from src.services.llm_mapper_service import LLMUnavailableError
 from src.services.metadata_service import ConflictError, MappingValidationError, NotFoundError
 from src.services.sap_client import SapAuthError, SapUnavailableError
@@ -29,12 +31,17 @@ log = logging.getLogger("migration.api")
 # (exception, status, code) - first match wins, so subclasses go before their bases
 _MAP: list[tuple[type[Exception], int, str]] = [
     (NotFoundError, 404, "NOT_FOUND"),
+    (KeyAlreadyRegisteredError, 409, "KEY_EXISTS"),
+    (AllApiKeysExhaustedError, 503, "ALL_KEYS_EXHAUSTED"),
+    (NoApiKeysConfiguredError, 503, "NO_KEYS"),
     (ConflictError, 409, "CONFLICT"),
     (MappingValidationError, 422, "INVALID_MAPPING"),
     (SegregationOfDutiesError, 403, "SEGREGATION_OF_DUTIES"),
     (NotAuthorizedError, 403, "NOT_AUTHORIZED"),
     (InvalidTransitionError, 409, "INVALID_TRANSITION"),
     (LoadStateError, 409, "LOAD_STATE"),
+    (ConstructionStateError, 409, "CONSTRUCTION_STATE"),
+    (ConstructionInputError, 422, "INVALID_WORKBOOK"),
     (LoadInputError, 422, "INVALID_LOAD_INPUT"),
     (LLMUnavailableError, 503, "LLM_UNAVAILABLE"),
     (SapAuthError, 502, "SAP_AUTH"),
@@ -47,6 +54,20 @@ _MAP: list[tuple[type[Exception], int, str]] = [
 ]
 
 
+def error_info(exc: Exception) -> tuple[int, str, str]:
+    """(http status, code, message) for any exception - shared by the handlers and background jobs."""
+    if isinstance(exc, GateBlockedError):
+        return 409, "GATE_BLOCKED", str(exc)
+    if isinstance(exc, PreflightBlockedError):
+        return 422, "PREFLIGHT_BLOCKED", str(exc)
+    if isinstance(exc, ExecutionError):
+        return 500, "RUN_FAILED", str(exc)
+    for exc_type, status, code in _MAP:
+        if isinstance(exc, exc_type):
+            return status, code, str(exc)
+    return 500, "INTERNAL_ERROR", "internal server error"
+
+
 def _json(status: int, code: str, detail) -> JSONResponse:
     return JSONResponse(status_code=status, content={"detail": detail, "code": code})
 
@@ -55,6 +76,10 @@ def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(GateBlockedError)
     async def _gate(_: Request, exc: GateBlockedError):
         return _json(409, "GATE_BLOCKED", {"message": str(exc), **exc.result.model_dump(mode="json")})
+
+    @app.exception_handler(PreflightBlockedError)
+    async def _preflight(_: Request, exc: PreflightBlockedError):
+        return _json(422, "PREFLIGHT_BLOCKED", {"message": str(exc), "report": exc.report.model_dump(mode="json")})
 
     @app.exception_handler(ExecutionError)
     async def _run_failed(_: Request, exc: ExecutionError):

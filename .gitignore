@@ -21,3 +21,26 @@ __pycache__/
 *.sqlite3
 staging_output/
 *.parquet
+
+# runtime artefacts
+workspace/
+*.log
+
+# never commit API keys
+gemini_keys*.json
+*.keys
+.env*
+
+# local test artefacts
+mock_data/screenshots/
+
+# local safety backups taken before destructive clean-ups
+backups/
+
+# test certificates for the TLS-only test servers (scripts/make_test_cert.py)
+test_certs/
+
+# generated demo/recording output (recreate with scripts/record_demo.py and scripts/generate_complex_data.py)
+mock_data/recordings/
+mock_data/large/
+mock_data/large20k/

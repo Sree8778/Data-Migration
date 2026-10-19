@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Union
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -12,42 +12,161 @@ from sqlalchemy.orm import Session
 from src.api.context import AppContext
 from src.api.deps import get_ctx, require_user
 from src.api.schemas import (
+    ArchiveRequest,
     GenerateResponse,
+    JobStatus,
     MappingDetail,
+    MappingSetCreateRequest,
     MappingSetSummary,
     RuleCreate,
     RuleDetail,
     RuleUpdate,
 )
-from src.api.views import mapping_detail, mapping_summary, parse_reasoning, rule_detail
+from src.api.views import mapping_detail, mapping_summary, parse_reasoning, rule_detail, run_preflight
+from src.schemas.preflight import PreflightReport
 from src.db.enums import MappingStatus, RuleType, TargetType
 from src.db.models import CatColumn, CatDataSource, CatTable, MapFieldRule, MapTableRule
+from src.schemas.metadata import MappingSetCreate
 from src.services.metadata_service import ConflictError, NotFoundError
 from src.services.rule_validator import validate_sql_expression
 
 router = APIRouter(tags=["mapping"])
 
 
-@router.post("/mapping/generate/{source_table_id}", response_model=GenerateResponse, status_code=201)
+@router.post("/mapping/generate/{source_table_id}", response_model=Union[GenerateResponse, JobStatus], status_code=201)
 def generate_mapping(
-    source_table_id: int, ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user)
-) -> GenerateResponse:
+    source_table_id: int, response: Response, background: bool = False,
+    consistency_runs: Optional[int] = Query(None, ge=1, le=5, description="ask the model this many times per column and flag columns whose answers differ (default: the server setting)"),
+    ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user),
+):
     """Run retrieval + local LLM + AST guardrails and store the result as a DRAFT mapping set.
 
-    Synchronous: duration is dominated by one LLM call per profiled column.
+    Default: synchronous, returns the mapping (201). With `?background=true` the work is queued as a
+    job and returns at once with a job id (202; 200 when an identical job is already running) - poll
+    `GET /api/mapping/jobs/{job_id}` for per-column progress and the final result. Use this for
+    anything beyond a few columns: a CPU-bound 7B model needs 1-2 minutes per column.
     """
-    report = ctx.mapping_orchestrator().generate_table_mapping_report(source_table_id)
-    return GenerateResponse(
-        mapping_set_id=report.mapping_set_id, report=report, mapping=mapping_detail(ctx, report.mapping_set_id))
+    if not background:
+        report = ctx.mapping_orchestrator().generate_table_mapping_report(source_table_id, consistency_runs=consistency_runs)
+        return GenerateResponse(
+            mapping_set_id=report.mapping_set_id, report=report, mapping=mapping_detail(ctx, report.mapping_set_id))
+
+    with ctx.session_factory() as s:  # fail fast on an unknown table before queueing
+        if s.get(CatTable, source_table_id) is None:
+            raise NotFoundError(f"table {source_table_id} does not exist")
+
+    def work(job):
+        warm = getattr(ctx.mapping_orchestrator()._llm, "keep_warm", None)
+        if warm:
+            job.message = "Loading the model"
+            warm()
+        report = ctx.mapping_orchestrator().generate_table_mapping_report(source_table_id, progress=job.report, consistency_runs=consistency_runs)
+        return GenerateResponse(
+            mapping_set_id=report.mapping_set_id, report=report,
+            mapping=mapping_detail(ctx, report.mapping_set_id)).model_dump(mode="json")
+
+    job, created = ctx.jobs.submit("ai-mapping", source_table_id, user, work)
+    response.status_code = 202 if created else 200
+    return JobStatus(**job.snapshot(), already_running=not created)
+
+
+@router.get("/mapping/jobs", response_model=list[JobStatus])
+def list_jobs(source_table_id: Optional[int] = None, ctx: AppContext = Depends(get_ctx)):
+    return [JobStatus(**j.snapshot()) for j in ctx.jobs.list(source_table_id)]
+
+
+@router.get("/mapping/jobs/{job_id}", response_model=JobStatus)
+def get_job(job_id: str, ctx: AppContext = Depends(get_ctx)) -> JobStatus:
+    job = ctx.jobs.get(job_id)
+    if job is None:
+        raise NotFoundError(f"job {job_id} does not exist (jobs are forgotten when the server restarts)")
+    return JobStatus(**job.snapshot())
+
+
+@router.post("/mapping/jobs/{job_id}/cancel", response_model=JobStatus)
+def cancel_job(job_id: str, ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user)) -> JobStatus:
+    """Stop after the column currently being evaluated; nothing is saved."""
+    job = ctx.jobs.get(job_id)
+    if job is None:
+        raise NotFoundError(f"job {job_id} does not exist")
+    job.request_cancel()
+    return JobStatus(**job.snapshot())
+
+
+@router.post("/mapping-sets", response_model=MappingSetSummary, status_code=201)
+def create_mapping_set(
+    body: MappingSetCreateRequest, ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user)
+) -> MappingSetSummary:
+    """Start an EMPTY draft mapping set (no AI needed); add rules by hand or via placeholders.
+
+    The caller becomes the creator, so a different person has to approve it (segregation of duties)."""
+    target = ctx.metadata.get_target_dictionary(body.target_object).tables[0].table
+    created = ctx.metadata.create_mapping_set(MappingSetCreate(
+        source_table_id=body.source_table_id, target_table_id=target.id, created_by=user))
+    with ctx.session_factory() as s:
+        return mapping_summary(s, s.get(MapTableRule, created.id))
 
 
 @router.get("/mapping-sets", response_model=list[MappingSetSummary])
-def list_mapping_sets(source_table_id: Optional[int] = None, ctx: AppContext = Depends(get_ctx)) -> list[MappingSetSummary]:
+def list_mapping_sets(
+    source_table_id: Optional[int] = None, include_archived: bool = False, ctx: AppContext = Depends(get_ctx),
+) -> list[MappingSetSummary]:
+    """Newest first. Archived sets are hidden unless `include_archived=true`."""
+    archived = ctx.archive.entries()
     with ctx.session_factory() as s:
         query = select(MapTableRule).order_by(MapTableRule.id.desc())
         if source_table_id is not None:
             query = query.where(MapTableRule.source_table_id == source_table_id)
-        return [mapping_summary(s, m) for m in s.scalars(query)]
+        return [mapping_summary(s, m, archived) for m in s.scalars(query) if include_archived or m.id not in archived]
+
+
+@router.post("/mapping/{mapping_set_id}/archive", response_model=MappingSetSummary)
+def archive_mapping_set(
+    mapping_set_id: int, body: ArchiveRequest, ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user),
+) -> MappingSetSummary:
+    """Hide an obsolete mapping set (any status except SUBMITTED, which is waiting for a reviewer).
+
+    Nothing is deleted: the set keeps its runs, lineage and approval record and can be restored. The workflow status
+    is untouched, because APPROVED is terminal and REJECTED means a named reviewer refused it."""
+    with ctx.session_factory() as s:
+        mapping = s.get(MapTableRule, mapping_set_id)
+        if mapping is None:
+            raise NotFoundError(f"mapping set {mapping_set_id} does not exist")
+        if mapping.status == MappingStatus.SUBMITTED:
+            raise HTTPException(409, f"mapping set {mapping_set_id} is waiting for approval; approve or reject it first")
+    ctx.archive.archive(mapping_set_id, user, body.reason.strip())
+    with ctx.session_factory() as s:
+        return mapping_summary(s, s.get(MapTableRule, mapping_set_id), ctx.archive.entries())
+
+
+@router.post("/mapping/{mapping_set_id}/unarchive", response_model=MappingSetSummary)
+def unarchive_mapping_set(mapping_set_id: int, ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user)) -> MappingSetSummary:
+    with ctx.session_factory() as s:
+        mapping = s.get(MapTableRule, mapping_set_id)
+        if mapping is None:
+            raise NotFoundError(f"mapping set {mapping_set_id} does not exist")
+        if not ctx.archive.restore(mapping_set_id):
+            raise HTTPException(409, f"mapping set {mapping_set_id} is not archived")
+        return mapping_summary(s, mapping, ctx.archive.entries())
+
+
+@router.get("/mapping/{mapping_set_id}/preflight", response_model=Optional[PreflightReport])
+def get_preflight(mapping_set_id: int, ctx: AppContext = Depends(get_ctx)) -> Optional[PreflightReport]:
+    """The last pre-submission check of this mapping set (run at submission, or by the Studio's 'Check rules on sample'); null when
+    none has been run yet - POST to this URL to run one."""
+    path = ctx.preflight_file(mapping_set_id)
+    return PreflightReport.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+@router.post("/mapping/{mapping_set_id}/preflight", response_model=PreflightReport)
+def post_preflight(
+    mapping_set_id: int, sample_rows: int = Query(2000, ge=100, le=20000), block_rate: float = Query(0.5, gt=0, le=1),
+    warn_rate: float = Query(0.05, ge=0, le=1), ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user),
+) -> PreflightReport:
+    """Dry-run the mapping on a reproducible sample of the landed rows through the real transformation and validation (nothing is
+    written to the run tables) and check the rules' structure. Every rule gets a measured pass rate; a lookup rule lists the legacy values
+    it has no entry for. Works on any status, so an approver can re-check a submitted mapping."""
+    return run_preflight(ctx, mapping_set_id, sample_rows, block_rate, warn_rate)
 
 
 @router.get("/mapping/{mapping_set_id}", response_model=MappingDetail)
@@ -148,6 +267,31 @@ def create_rule(
         ctx.lookups.register_lookups(rule_id, body.lookups)
     with ctx.session_factory() as s:
         return rule_detail(s, s.get(MapFieldRule, rule_id))
+
+
+@router.delete("/mapping/rules/{rule_id}")
+def delete_rule(rule_id: int, ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user)) -> dict:
+    """Remove a rule from a DRAFT mapping set (its lookups go with it). APPROVED / SUBMITTED sets are immutable:
+    change an approved mapping by creating a new version. A rule that already produced lineage or defects in a run
+    cannot be deleted, because those records must stay traceable; edit it, or archive the whole set instead.
+    Every deletion is written to an audit log (who, when, what the rule was)."""
+    try:
+        with ctx.session_factory.begin() as s:
+            rule = s.scalar(select(MapFieldRule).where(MapFieldRule.id == rule_id).with_for_update())
+            if rule is None:
+                raise NotFoundError(f"field rule {rule_id} does not exist")
+            _draft_mapping(s, rule.mapping_set_id)
+            detail = rule_detail(s, rule)
+            s.delete(rule)
+            s.flush()
+    except IntegrityError as exc:
+        raise ConflictError(f"rule {rule_id} already has run history (lineage or defects) and cannot be deleted; "
+                            "archive the mapping set or create a new version instead") from exc
+    ctx.archive.log_rule_deletion(user, {
+        "rule_id": rule_id, "mapping_set_id": detail.mapping_set_id, "source_column": detail.source_column,
+        "target": f"{detail.target_table}.{detail.target_column}", "rule_type": detail.rule_type,
+        "transformation_logic": detail.transformation_logic, "lookups": detail.lookup_count})
+    return {"deleted": rule_id, "mapping_set_id": detail.mapping_set_id}
 
 
 @router.put("/mapping/rules/{rule_id}", response_model=RuleDetail)

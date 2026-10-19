@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections import Counter
 from decimal import Decimal
-from typing import Optional
+from typing import Callable, Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload, sessionmaker
@@ -37,13 +37,25 @@ from src.services.llm_mapper_service import (
     MAX_PROMPT_SAMPLES,
     LLMMapperService,
     LLMOutputError,
+    is_pinned_model,
 )
 from src.services.metadata_service import MappingValidationError, NotFoundError
 from src.services.profiler_service import _mask_shape  # same masking rule as Module 2
 from src.services.rule_validator import RuleValidator
 
 _MASKED_CLASSES = (PiiClassification.CONFIDENTIAL, PiiClassification.RESTRICTED_PII)
-TOP_K = 5
+TOP_K = 8  # wider than the 5 that suited tidy names: cryptic legacy names need the extra candidates
+MAX_CONSISTENCY_RUNS = 5
+_NO_MATCH, _ERROR = ("NO_MATCH",), ("ERROR",)
+
+
+def _answer_key(rec) -> tuple:
+    """What two answers must share to count as the same decision: the target field and the kind of rule."""
+    return (rec.target_table.strip().upper(), rec.target_column.strip().upper(), rec.rule_type)
+
+
+def _describe(key: tuple) -> str:
+    return key[0] if len(key) == 1 else f"{key[0]}.{key[1]} ({key[2]})"
 
 
 class MappingOrchestrator:
@@ -54,7 +66,9 @@ class MappingOrchestrator:
         llm_mapper: LLMMapperService,
         validator: RuleValidator,
         created_by: str = "ai-mapper",
+        consistency_runs: int = 1,
     ) -> None:
+        self._consistency_runs = max(1, min(MAX_CONSISTENCY_RUNS, int(consistency_runs)))
         self._session_factory = session_factory
         self._embeddings = embedding_service
         self._llm = llm_mapper
@@ -78,8 +92,18 @@ class MappingOrchestrator:
         source_table_id: int,
         target_object_name: str = "BUSINESS_PARTNER",
         mapping_set_name: str = "AI_Draft_Mapping",
+        progress: Optional[Callable[[str, int, int, Optional[str]], None]] = None,
+        consistency_runs: Optional[int] = None,
     ) -> MappingGenerationReport:
         """Same as `generate_table_mapping` but returns the full per-column report.
+
+        `consistency_runs` (1-5; default from the constructor): ask the model that many times about every column. The most common
+        answer is kept; a column whose answers differ is flagged NEEDS_REVIEW as unstable, with the losing answers listed. A model that
+        is deterministic (a local Ollama model at temperature 0 and a fixed seed) is asked once however many runs are requested.
+
+        `progress(event, position, total, column)` is called with event "start" (total known),
+        "column" (before each LLM call; `position` is 1-based) and "persist" (before saving). An
+        exception raised by the callback aborts the run before anything is written.
 
         `mapping_set_name` is echoed in the report only: `map_table_rules` has no name column
         (Module 1 schema is locked).
@@ -98,43 +122,69 @@ class MappingOrchestrator:
         self._embeddings.build_index()
         all_names = [c.column_name for c in self._all_source_columns(source_table_id)]
 
+        runs = self._consistency_runs if consistency_runs is None else max(1, min(MAX_CONSISTENCY_RUNS, int(consistency_runs)))
+        if getattr(self._llm, "deterministic", False):
+            runs = 1
         proposals: list[ColumnProposal] = []
         validations: dict[str, ValidationResult] = {}
         confidences: dict[str, float] = {}
-        for ctx in columns:
-            candidates = self._embeddings.get_top_k_candidates(ctx.column_name, ctx.data_type, TOP_K)
+        notify = progress or (lambda *_: None)
+        notify("start", 0, len(columns), None)
+        for position, ctx in enumerate(columns, start=1):
+            notify("column", position, len(columns), ctx.column_name)
+            candidates = self._embeddings.get_top_k_candidates(ctx.column_name, ctx.data_type, TOP_K, ctx.sample_values)
             labels = [f"{c.table_name}.{c.column_name}" for c in candidates]
-            try:
-                rec = self._llm.recommend(ctx, candidates)  # LLMUnavailableError aborts the run
-            except LLMOutputError as exc:
+            answers: list = []  # a FieldMappingRecommendation, None (NO_MATCH) or the error text, one per run
+            for _ in range(runs):
+                try:
+                    answers.append(self._llm.recommend(ctx, candidates))  # LLMUnavailableError aborts the run
+                except LLMOutputError as exc:
+                    answers.append(str(exc))
+            votes = Counter(_ERROR if isinstance(a, str) else _NO_MATCH if a is None else _answer_key(a) for a in answers)
+            best = max(votes.values())
+            leaders = [k for k, n in votes.items() if n == best]
+            if len(leaders) > 1:  # a tie: keep the answer the model was most confident about, preferring a real mapping to NO_MATCH or an error
+                leaders.sort(key=lambda k: (k in (_NO_MATCH, _ERROR), -max((a.confidence_score for a in answers if not isinstance(a, str) and a is not None
+                                                                              and _answer_key(a) == k), default=0.0)))
+            winner = leaders[0]
+            agreement = votes[winner] / runs
+            losers = [f"{n} x {_describe(k)}" for k, n in votes.most_common() if k != winner]
+            unstable = (f"unstable: {votes[winner]} of {runs} runs gave {_describe(winner)}, the others gave " + ", ".join(losers)) if losers else None
+
+            if winner == _ERROR:
+                reasons = [next(a for a in answers if isinstance(a, str))] + ([unstable] if unstable else [])
                 proposals.append(ColumnProposal(
-                    source_column=ctx.column_name, outcome=ProposalOutcome.ERROR,
-                    status=ReviewStatus.NEEDS_REVIEW, reasons=[str(exc)], candidates=labels,
+                    source_column=ctx.column_name, outcome=ProposalOutcome.ERROR, status=ReviewStatus.NEEDS_REVIEW,
+                    reasons=reasons, candidates=labels, runs=runs, agreement=agreement, alternatives=losers,
                 ))
                 continue
-            if rec is None:
+            if winner == _NO_MATCH:
                 proposals.append(ColumnProposal(
                     source_column=ctx.column_name, outcome=ProposalOutcome.NO_MATCH, candidates=labels,
+                    status=ReviewStatus.NEEDS_REVIEW if unstable else None, reasons=[unstable] if unstable else [],
+                    runs=runs, agreement=agreement, alternatives=losers,
                 ))
                 continue
 
-            result = self._validator.validate(
-                rec, allowed_source_columns=all_names, candidates=candidates
-            )
+            rec = max((a for a in answers if not isinstance(a, str) and a is not None and _answer_key(a) == winner), key=lambda a: a.confidence_score)
+            result = self._validator.validate(rec, allowed_source_columns=all_names, candidates=candidates, source=ctx)
+            reasons = result.reasons + ([unstable] if unstable else [])
             validations[ctx.column_name] = result
             confidences[ctx.column_name] = rec.confidence_score
             proposals.append(ColumnProposal(
                 source_column=ctx.column_name,
                 outcome=ProposalOutcome.SAVED if result.persistable else ProposalOutcome.REJECTED,
-                status=result.status,
+                status=ReviewStatus.NEEDS_REVIEW if reasons else ReviewStatus.OK,
                 recommendation=rec,
-                reasons=result.reasons,
+                reasons=reasons,
                 candidates=labels,
+                runs=runs, agreement=agreement, alternatives=losers,
             ))
 
+        notify("persist", len(columns), len(columns), None)
         self._resolve_target_conflicts(proposals, validations)
         return self._persist(
-            source_table_id, target_object_name, mapping_set_name, proposals, validations, skipped
+            source_table_id, target_object_name, mapping_set_name, proposals, validations, skipped, runs
         )
 
     # ------------------------------------------------------------------ loading
@@ -156,9 +206,10 @@ class MappingOrchestrator:
                 if col.null_ratio is None or col.distinct_ratio is None:
                     skipped.append(col.column_name)
                     continue
-                samples = [str(v) for v in (col.sample_values or [])[:MAX_PROMPT_SAMPLES]]
+                every = [str(v) for v in (col.sample_values or [])]
                 if col.pii_classification in _MASKED_CLASSES:
-                    samples = [_mask_shape(s) for s in samples]
+                    every = [_mask_shape(s) for s in every]
+                samples = every[:MAX_PROMPT_SAMPLES]
                 contexts.append(SourceColumnContext(
                     column_id=col.id,
                     column_name=col.column_name,
@@ -167,6 +218,7 @@ class MappingOrchestrator:
                     null_ratio=float(col.null_ratio),
                     distinct_ratio=float(col.distinct_ratio),
                     sample_values=samples,
+                    evidence_values=every,
                     table_name=table.table_name,
                 ))
             return table.table_name, contexts, skipped
@@ -207,6 +259,7 @@ class MappingOrchestrator:
         proposals: list[ColumnProposal],
         validations: dict[str, ValidationResult],
         skipped: list[str],
+        runs: int = 1,
     ) -> MappingGenerationReport:
         to_save = [p for p in proposals if p.outcome == ProposalOutcome.SAVED]
         with self._session_factory.begin() as session:
@@ -280,6 +333,8 @@ class MappingOrchestrator:
                 target_table_id=target_table_id,
                 version=version,
                 model_name=self._llm.model_name,
+                model_pinned=is_pinned_model(self._llm),
+                consistency_runs=runs,
                 proposals=proposals,
                 skipped_unprofiled_columns=skipped,
                 unmapped_mandatory_targets=unmapped,

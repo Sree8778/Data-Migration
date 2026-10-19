@@ -1,0 +1,136 @@
+# REAL database servers for testing the connectors (MySQL, SQL Server, Oracle). Throw-away, test-only credentials.
+#
+#   docker compose -f docker-compose.servers.yml --profile mysql up -d --wait
+#   python -m pytest tests/test_real_servers.py -k mysql
+#   docker compose -f docker-compose.servers.yml --profile mysql down -v
+#
+# Start ONE at a time on a small machine: SQL Server and Oracle each want about 2 GB. Ports are deliberately uncommon so they
+# never collide with a database you already run. Tests skip a server that is not reachable.
+
+services:
+  mysql:
+    image: mysql:8.4
+    profiles: ["mysql"]
+    environment:
+      MYSQL_ROOT_PASSWORD: Root_pw_Test1
+      MYSQL_DATABASE: legacy_test
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci", "--innodb-buffer-pool-size=128M"]
+    ports: ["33306:3306"]
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pRoot_pw_Test1"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    profiles: ["mssql"]
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Strong_Pw_123!"
+      MSSQL_MEMORY_LIMIT_MB: "1536"
+    ports: ["14333:1433"]
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Strong_Pw_123!' -Q 'SELECT 1' || /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'Strong_Pw_123!' -Q 'SELECT 1'"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+
+  oracle:
+    image: gvenzl/oracle-free:23-slim-faststart
+    profiles: ["oracle"]
+    environment:
+      ORACLE_PASSWORD: Oracle_pw_Test1
+      APP_USER: legacy
+      APP_USER_PASSWORD: Legacy_pw_Test1
+    ports: ["15210:1521"]
+    mem_limit: 3g
+    shm_size: 1g
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 10s
+      timeout: 10s
+      retries: 60
+
+  # ---- servers that REQUIRE TLS, like Azure SQL / Azure Database for PostgreSQL / MySQL (python scripts/make_test_cert.py first)
+  mssql_tls:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    profiles: ["tls"]
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Strong_Pw_123!"
+      MSSQL_MEMORY_LIMIT_MB: "1536"
+    volumes:
+      - ./test_certs:/certs:ro
+      - ./test_certs/mssql.conf:/var/opt/mssql/mssql.conf:ro
+    ports: ["14334:1433"]
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Strong_Pw_123!' -Q 'SELECT 1' || /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'Strong_Pw_123!' -Q 'SELECT 1'"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+
+  postgres_tls:
+    image: postgres:16-alpine
+    profiles: ["tls"]
+    environment:
+      POSTGRES_PASSWORD: Pg_pw_Test1
+      POSTGRES_DB: legacy_test
+    volumes:
+      - ./test_certs:/certs:ro
+    # a bind-mounted key cannot be chmod 600 on Windows, so copy it into the container first
+    command: ["sh", "-c", "cp /certs/server.crt /certs/server.key /certs/pg_hba.conf /tmp/ && chown postgres:postgres /tmp/server.* /tmp/pg_hba.conf && chmod 600 /tmp/server.key && exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key -c hba_file=/tmp/pg_hba.conf"]
+    ports: ["15433:5432"]
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d legacy_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+
+  mysql_tls:
+    image: mysql:8.4
+    profiles: ["tls"]
+    environment:
+      MYSQL_ROOT_PASSWORD: Root_pw_Test1
+      MYSQL_DATABASE: legacy_test
+    command: ["--require-secure-transport=ON", "--ssl-ca=/certs/server.crt", "--ssl-cert=/certs/server.crt", "--ssl-key=/certs/server.key",
+              "--character-set-server=utf8mb4", "--innodb-buffer-pool-size=128M"]
+    volumes:
+      - ./test_certs:/certs:ro
+    ports: ["33307:3306"]
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pRoot_pw_Test1", "--ssl-mode=REQUIRED"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+
+  # ---- remote FILE storage: Azure Blob (Azurite emulator), S3 API (Scality CloudServer), SFTP.  docker compose -f docker-compose.servers.yml --profile storage up -d
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    profiles: ["storage"]
+    command: ["azurite-blob", "--blobHost", "0.0.0.0", "--blobPort", "10000", "--skipApiVersionCheck", "--loose"]
+    ports: ["10000:10000"]
+    mem_limit: 256m
+
+  s3:
+    image: zenko/cloudserver
+    profiles: ["storage"]
+    environment:
+      SCALITY_ACCESS_KEY_ID: s3_test_access
+      SCALITY_SECRET_ACCESS_KEY: S3_secret_Test1
+      S3BACKEND: mem
+      REMOTE_MANAGEMENT_DISABLE: "1"
+    ports: ["18000:8000"]
+    mem_limit: 512m
+
+  sftp:
+    image: atmoz/sftp
+    profiles: ["storage"]
+    command: ["legacy:Legacy_pw_Test1:::incoming"]
+    ports: ["12222:22"]
+    mem_limit: 128m

@@ -1,0 +1,121 @@
+CUST_ID,CUST_NAME,TAX_ID,EMAIL,PHONE,ADDR_STREET,CITY,COUNTRY,POSTAL_CODE,PAYMENT_TERMS
+900701,  RANEMABE  FOODS  AG ,,,,203 Market Lane 2331,Pune,IN,411092,NET30
+900702,"Ranemabe Foods, A.G.",,,,203 Market Lane 2331,Pune,IN,411092,NET30
+602432,Ranemabe Foods AG,,accounts@ranemabe2331.example.com,+2-630-8125855,203 Market Lane 2331,Pune,IN,411092,NET30
+900703,  MIGREGI  SOFTWARE  AG ,,,,554 Oak Road 2332,Pune,IN,411029,COD
+900704,"Migregi Software, A.G.",,,,554 Oak Road 2332,Pune,IN,411029,COD
+602434,Migregi Software AG,,accounts@migregi2332.example.com,+25-408-5565468,554 Oak Road 2332,Pune,IN,411029,COD
+900705,  FARANOBE  ENERGY  SA ,,,,887 Hill Street 2333,Austin,US,787070,NET60
+900706,"Faranobe Energy, S.A.",,,,887 Hill Street 2333,Austin,US,787070,NET60
+602436,Faranobe Energy SA,,accounts@faranobe2333.example.com,+77-124-5203033,887 Hill Street 2333,Austin,US,787070,NET60
+900707,  XIZOSU  ENERGY  AG ,,,,807 Maple Avenue 2334,Paris,FR,750059,NET30
+900708,"Xizosu Energy, A.G.",,,,807 Maple Avenue 2334,Paris,FR,750059,NET30
+602438,Xizosu Energy AG,,accounts@xizosu2334.example.com,+81-251-1491686,807 Maple Avenue 2334,Paris,FR,750059,NET30
+900709,  XISUSU  MOTORS  AG ,,,,345 Elm Avenue 2335,Pune,IN,411032,COD
+900710,"Xisusu Motors, A.G.",,,,345 Elm Avenue 2335,Pune,IN,411032,COD
+602440,Xisusu Motors AG,,accounts@xisusu2335.example.com,+68-785-5961209,345 Elm Avenue 2335,Pune,IN,411032,COD
+900711,  RANORA  MOTORS  CO  LTD ,,,,272 Market Street 2336,Madrid,ES,280146,NET60
+900712,"Ranora Motors Co, Ltd.",,,,272 Market Street 2336,Madrid,ES,280146,NET60
+602442,Ranora Motors Co Ltd,,accounts@ranora2336.example.com,+23-440-6153118,272 Market Street 2336,Madrid,ES,280146,NET60
+900713,  XIBROMINE  LABS  SA ,,,,334 Birch Lane 2337,Madrid,ES,280177,NET60
+900714,"Xibromine Labs, S.A.",,,,334 Birch Lane 2337,Madrid,ES,280177,NET60
+602444,Xibromine Labs SA,,accounts@xibromine2337.example.com,+58-903-9569819,334 Birch Lane 2337,Madrid,ES,280177,NET60
+900715,  LIKALOTU  LOGISTICS  CO  LTD ,,,,138 Birch Street 2338,Paris,FR,750038,COD
+900716,"Likalotu Logistics Co, Ltd.",,,,138 Birch Street 2338,Paris,FR,750038,COD
+602446,Likalotu Logistics Co Ltd,,accounts@likalotu2338.example.com,+61-161-7662276,138 Birch Street 2338,Paris,FR,750038,COD
+900717,  LIDABEBRO  FOODS  AG ,,,,126 Mill Lane 2339,Austin,US,787080,NET30
+900718,"Lidabebro Foods, A.G.",,,,126 Mill Lane 2339,Austin,US,787080,NET30
+602448,Lidabebro Foods AG,,accounts@lidabebro2339.example.com,+27-561-9526021,126 Mill Lane 2339,Austin,US,787080,NET30
+900719,  LODANO  LOGISTICS  CO  LTD ,,,,700 Maple Road 2340,Paris,FR,750025,NET30
+900720,"Lodano Logistics Co, Ltd.",,,,700 Maple Road 2340,Paris,FR,750025,NET30
+602450,Lodano Logistics Co Ltd,,accounts@lodano2340.example.com,+73-558-6000636,700 Maple Road 2340,Paris,FR,750025,NET30
+900721,  PEMAMI  FOODS  CORP ,,,,458 Park Lane 2341,Lyon,FR,690078,NET60
+900722,"Pemami Foods, Corp.",,,,458 Park Lane 2341,Lyon,FR,690078,NET60
+602452,Pemami Foods Corp,,accounts@pemami2341.example.com,+94-817-7785269,458 Park Lane 2341,Lyon,FR,690078,NET60
+900723,  MILINOGRE  PHARMA  LTD ,,,,530 Market Lane 2342,Lyon,FR,690010,COD
+900724,"Milinogre Pharma, Ltd.",,,,530 Market Lane 2342,Lyon,FR,690010,COD
+602454,Milinogre Pharma Ltd,,accounts@milinogre2342.example.com,+42-229-9978902,530 Market Lane 2342,Lyon,FR,690010,COD
+900725,  KAGRELOPE  LOGISTICS  CORP ,,,,145 Maple Street 2343,London,GB,EC1A22,NET60
+900726,"Kagrelope Logistics, Corp.",,,,145 Maple Street 2343,London,GB,EC1A22,NET60
+602456,Kagrelope Logistics Corp,,accounts@kagrelope2343.example.com,+29-858-7209180,145 Maple Street 2343,London,GB,EC1A22,NET60
+900727,  JUXITUFA  SYSTEMS  AG ,,,,475 Cedar Avenue 2344,Boston,US,021136,NET60
+900728,"Juxitufa Systems, A.G.",,,,475 Cedar Avenue 2344,Boston,US,021136,NET60
+602458,Juxitufa Systems AG,,accounts@juxitufa2344.example.com,+25-107-5560233,475 Cedar Avenue 2344,Boston,US,021136,NET60
+900729,  NESUVE  ENERGY  SA ,,,,506 Station Avenue 2345,London,GB,EC1A45,NET60
+900730,"Nesuve Energy, S.A.",,,,506 Station Avenue 2345,London,GB,EC1A45,NET60
+602460,Nesuve Energy SA,,accounts@nesuve2345.example.com,+93-703-4362587,506 Station Avenue 2345,London,GB,EC1A45,NET60
+900731,  HOPEVETU  SYSTEMS  INC ,,,,316 Market Lane 2346,Lyon,FR,690069,COD
+900732,"Hopevetu Systems, Inc.",,,,316 Market Lane 2346,Lyon,FR,690069,COD
+602462,Hopevetu Systems Inc,,accounts@hopevetu2346.example.com,+8-422-6166931,316 Market Lane 2346,Lyon,FR,690069,COD
+900733,  ZONEBETU  SOFTWARE  LTD ,,,,75 Mill Avenue 2347,Pune,IN,411084,COD
+900734,"Zonebetu Software, Ltd.",,,,75 Mill Avenue 2347,Pune,IN,411084,COD
+602464,Zonebetu Software Ltd,,accounts@zonebetu2347.example.com,+59-956-3570768,75 Mill Avenue 2347,Pune,IN,411084,COD
+900735,  QUALOBEDA  PHARMA  AG ,,,,707 Maple Street 2348,Austin,US,787078,COD
+900736,"Qualobeda Pharma, A.G.",,,,707 Maple Street 2348,Austin,US,787078,COD
+602466,Qualobeda Pharma AG,,accounts@qualobeda2348.example.com,+49-582-4788607,707 Maple Street 2348,Austin,US,787078,COD
+900737,  LOSTYDA  LABS  GMBH ,,,,837 Market Avenue 2349,Toronto,CA,M5H 46,NET60
+900738,"Lostyda Labs, G.m.b.H.",,,,837 Market Avenue 2349,Toronto,CA,M5H 46,NET60
+602468,Lostyda Labs GmbH,,accounts@lostyda2349.example.com,+7-911-2554299,837 Market Avenue 2349,Toronto,CA,M5H 46,NET60
+900739,  LOLIPE  TRADING  LLC ,,,,602 Sunset Street 2350,Lyon,FR,690081,NET60
+900740,"Lolipe Trading, L.L.C.",,,,602 Sunset Street 2350,Lyon,FR,690081,NET60
+602470,Lolipe Trading LLC,,accounts@lolipe2350.example.com,+73-717-4970894,602 Sunset Street 2350,Lyon,FR,690081,NET60
+900741,  FAXILI  LOGISTICS  SA ,,,,232 Hill Road 2351,Pune,IN,411036,NET30
+900742,"Faxili Logistics, S.A.",,,,232 Hill Road 2351,Pune,IN,411036,NET30
+602472,Faxili Logistics SA,,accounts@faxili2351.example.com,+55-690-8808129,232 Hill Road 2351,Pune,IN,411036,NET30
+900743,  KATUBRONE  TRADING  LLC ,,,,896 Lake Street 2352,Lyon,FR,690086,NET60
+900744,"Katubrone Trading, L.L.C.",,,,896 Lake Street 2352,Lyon,FR,690086,NET60
+602474,Katubrone Trading LLC,,accounts@katubrone2352.example.com,+97-240-6424849,896 Lake Street 2352,Lyon,FR,690086,NET60
+900745,  BEXIHO  PHARMA  CORP ,,,,307 Oak Street 2353,Austin,US,787082,NET30
+900746,"Bexiho Pharma, Corp.",,,,307 Oak Street 2353,Austin,US,787082,NET30
+602476,Bexiho Pharma Corp,,accounts@bexiho2353.example.com,+26-115-1250509,307 Oak Street 2353,Austin,US,787082,NET30
+900747,  RAGRESTY  SOFTWARE  GMBH ,,,,345 Elm Road 2354,Pune,IN,411083,NET60
+900748,"Ragresty Software, G.m.b.H.",,,,345 Elm Road 2354,Pune,IN,411083,NET60
+602478,Ragresty Software GmbH,,accounts@ragresty2354.example.com,+22-244-2860551,345 Elm Road 2354,Pune,IN,411083,NET60
+900749,  LIRADAGRE  LABS  LTD ,,,,25 Oak Avenue 2355,Berlin,DE,101198,NET60
+900750,"Liradagre Labs, Ltd.",,,,25 Oak Avenue 2355,Berlin,DE,101198,NET60
+602480,Liradagre Labs Ltd,,accounts@liradagre2355.example.com,+25-297-7558792,25 Oak Avenue 2355,Berlin,DE,101198,NET60
+900751,  XIZOBE  LABS  LTD ,,,,751 Maple Avenue 2356,London,GB,EC1A25,NET60
+900752,"Xizobe Labs, Ltd.",,,,751 Maple Avenue 2356,London,GB,EC1A25,NET60
+602482,Xizobe Labs Ltd,,accounts@xizobe2356.example.com,+62-532-5515284,751 Maple Avenue 2356,London,GB,EC1A25,NET60
+900753,  QUABERANO  ANALYTICS  GMBH ,,,,282 Mill Street 2357,Pune,IN,411031,NET30
+900754,"Quaberano Analytics, G.m.b.H.",,,,282 Mill Street 2357,Pune,IN,411031,NET30
+602484,Quaberano Analytics GmbH,,accounts@quaberano2357.example.com,+5-266-5079238,282 Mill Street 2357,Pune,IN,411031,NET30
+900755,  BEMIBROSTY  ANALYTICS  LTD ,,,,797 Birch Road 2358,Paris,FR,750071,NET60
+900756,"Bemibrosty Analytics, Ltd.",,,,797 Birch Road 2358,Paris,FR,750071,NET60
+602486,Bemibrosty Analytics Ltd,,accounts@bemibrosty2358.example.com,+10-476-6692783,797 Birch Road 2358,Paris,FR,750071,NET60
+900757,  FAFAGI  FOODS  LTD ,,,,36 Park Avenue 2359,Pune,IN,411079,NET30
+900758,"Fafagi Foods, Ltd.",,,,36 Park Avenue 2359,Pune,IN,411079,NET30
+602488,Fafagi Foods Ltd,,accounts@fafagi2359.example.com,+19-919-4587843,36 Park Avenue 2359,Pune,IN,411079,NET30
+900759,  MIBROGIKA  FOODS  CO  LTD ,,,,533 Oak Lane 2360,Berlin,DE,101155,COD
+900760,"Mibrogika Foods Co, Ltd.",,,,533 Oak Lane 2360,Berlin,DE,101155,COD
+602490,Mibrogika Foods Co Ltd,,accounts@mibrogika2360.example.com,+68-876-7057853,533 Oak Lane 2360,Berlin,DE,101155,COD
+900761,  MISUNONE  TRADING  GMBH ,,,,343 Station Street 2361,Leeds,GB,LS1 49,COD
+900762,"Misunone Trading, G.m.b.H.",,,,343 Station Street 2361,Leeds,GB,LS1 49,COD
+602492,Misunone Trading GmbH,,accounts@misunone2361.example.com,+61-719-8585907,343 Station Street 2361,Leeds,GB,LS1 49,COD
+900763,  KABROVEGI  INDUSTRIES  AG ,,,,523 Hill Road 2362,Leeds,GB,LS1 49,NET30
+900764,"Kabrovegi Industries, A.G.",,,,523 Hill Road 2362,Leeds,GB,LS1 49,NET30
+602494,Kabrovegi Industries AG,,accounts@kabrovegi2362.example.com,+12-921-9065497,523 Hill Road 2362,Leeds,GB,LS1 49,NET30
+900765,  MIPEFA  LABS  GMBH ,,,,178 Pine Avenue 2363,Boston,US,021150,NET30
+900766,"Mipefa Labs, G.m.b.H.",,,,178 Pine Avenue 2363,Boston,US,021150,NET30
+602496,Mipefa Labs GmbH,,accounts@mipefa2363.example.com,+76-141-9593365,178 Pine Avenue 2363,Boston,US,021150,NET30
+900767,  XISUXI  LABS  LTD ,,,,380 Mill Lane 2364,Paris,FR,750097,NET30
+900768,"Xisuxi Labs, Ltd.",,,,380 Mill Lane 2364,Paris,FR,750097,NET30
+602498,Xisuxi Labs Ltd,,accounts@xisuxi2364.example.com,+92-503-7057709,380 Mill Lane 2364,Paris,FR,750097,NET30
+900769,  BROBROGREKA  PHARMA  CO  LTD ,,,,403 Cedar Lane 2365,Pune,IN,411049,NET60
+900770,"Brobrogreka Pharma Co, Ltd.",,,,403 Cedar Lane 2365,Pune,IN,411049,NET60
+602500,Brobrogreka Pharma Co Ltd,,accounts@brobrogreka2365.example.com,+57-830-6041626,403 Cedar Lane 2365,Pune,IN,411049,NET60
+900771,  LIMAXI  SOFTWARE  CO  LTD ,,,,50 Birch Street 2366,Toronto,CA,M5H 80,NET60
+900772,"Limaxi Software Co, Ltd.",,,,50 Birch Street 2366,Toronto,CA,M5H 80,NET60
+602502,Limaxi Software Co Ltd,,accounts@limaxi2366.example.com,+93-319-2015511,50 Birch Street 2366,Toronto,CA,M5H 80,NET60
+900773,  ZOBROMA  SOFTWARE  LTD ,,,,469 Elm Road 2367,Pune,IN,411056,COD
+900774,"Zobroma Software, Ltd.",,,,469 Elm Road 2367,Pune,IN,411056,COD
+602504,Zobroma Software Ltd,,accounts@zobroma2367.example.com,+89-249-3532130,469 Elm Road 2367,Pune,IN,411056,COD
+900775,  MISTYSTY  SOFTWARE  CORP ,,,,232 Mill Avenue 2368,Leeds,GB,LS1 36,NET30
+900776,"Mistysty Software, Corp.",,,,232 Mill Avenue 2368,Leeds,GB,LS1 36,NET30
+602506,Mistysty Software Corp,,accounts@mistysty2368.example.com,+60-380-1627119,232 Mill Avenue 2368,Leeds,GB,LS1 36,NET30
+900777,  STYPEZOZO  ENERGY  CORP ,,,,587 Lake Street 2369,Berlin,DE,101165,NET30
+900778,"Stypezozo Energy, Corp.",,,,587 Lake Street 2369,Berlin,DE,101165,NET30
+602508,Stypezozo Energy Corp,,accounts@stypezozo2369.example.com,+1-480-8740292,587 Lake Street 2369,Berlin,DE,101165,NET30
+900779,  VEMIGREFA  PHARMA  CORP ,,,,801 Lake Street 2370,London,GB,EC1A15,COD
+900780,"Vemigrefa Pharma, Corp.",,,,801 Lake Street 2370,London,GB,EC1A15,COD
+602510,Vemigrefa Pharma Corp,,accounts@vemigrefa2370.example.com,+30-440-6408771,801 Lake Street 2370,London,GB,EC1A15,COD

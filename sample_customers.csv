@@ -1,0 +1,7 @@
+CUST_ID,CUST_NAME,TAX_ID,EMAIL,PHONE,ADDR_STREET,CITY,COUNTRY,POSTAL_CODE,PAYMENT_TERMS
+1001,Acme Rockets Ltd,TX-0001,sales@acme.example.com,+1-555-0101,55 Market Street,Denver,USA,80202,NET30
+1002,Globex Corporation,TX-0002,info@globex.example.com,+1-555-0102,12 Tech Way,Austin,United States,73301,NET60
+1003,Initech Software Solutions,,billing@initech.example.com,,77 Oak Avenue,Reston,US,20190,COD
+1004,Siemens Healthineers Inc,TX-0004,,+1-610-555-0104,100 Medical Parkway,Malvern,USA,19355,NET30
+1005,Umbrella GmbH,TX-0005,kontakt@umbrella.example.com,+49-30-5550105,Hauptstrasse 7,Berlin,Germany,10115,NET30
+1006,Hooli Holdings,TX-0006,,,9 Garden Road,Leeds,UK,02134,NET90

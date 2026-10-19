@@ -177,6 +177,11 @@ class HttpSapClient:
     def create_business_partners(self, records: list[BusinessPartnerRecord]) -> list[SapRecordResult]:
         return [self._create(r) for r in records]
 
+    def ping(self) -> str:
+        """Connection test: authenticate and fetch a CSRF token from the Business Partner service. Creates nothing."""
+        self._fetch_csrf()
+        return f"authenticated against {self._config.base_url}"
+
     # ------------------------------------------------------------------ internals
     def _fetch_csrf(self) -> str:
         response = self._send("GET", BP_SERVICE_ROOT, headers={"X-CSRF-Token": "Fetch"})

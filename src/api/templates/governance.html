@@ -1,21 +1,81 @@
 {% extends "base.html" %}
 {% block content %}
 <div id="gate" class="banner">Loading...</div>
-<div class="toolbar">
-  <button class="btn" id="sync-jira">Sync defects to Jira</button>
-  <button class="btn" id="sign-off">Steward sign-off for load</button>
-  <label>Load as
-    <select id="load-mode">
-      <option value="cockpit">Migration Cockpit workbook</option>
-      <option value="sap:sandbox">SAP sandbox (simulated)</option>
-      <option value="sap:live">SAP live</option>
-    </select></label>
-  <button class="btn primary" id="load">Execute load</button>
-  <a class="btn" href="/ui/certificate/{{ run_id }}">Reconciliation certificate</a>
+<div class="tabs" role="tablist" aria-label="Governance hub sections">
+  <button class="tab active" role="tab" id="tab-defects" aria-selected="true" aria-controls="panel-defects">Defects &amp; load gate</button>
+  <button class="tab" role="tab" id="tab-construction" aria-selected="false" aria-controls="panel-construction">Data Construction</button>
 </div>
-<section class="card">
-  <h2>Rule-aggregated defects</h2>
-  <div id="defects"><p class="muted">Loading...</p></div>
+
+<section id="panel-defects" role="tabpanel" aria-labelledby="tab-defects">
+  <div class="toolbar">
+    <button class="btn" id="sync-jira">Sync defects to Jira</button>
+    <button class="btn" id="sign-off">Steward sign-off for load</button>
+    <label>Load as
+      <select id="load-mode">
+        <option value="cockpit">Migration Cockpit workbook</option>
+        <option value="sap:sandbox">SAP sandbox (simulated)</option>
+        <option value="sap:live">SAP live</option>
+      </select></label>
+    <button class="btn primary" id="load">Execute load</button>
+    <a class="btn" href="/ui/certificate/{{ run_id }}">Reconciliation certificate</a>
+  </div>
+  <section class="card" id="db-delivery">
+    <h2>Deliver to a database target</h2>
+    <p class="muted" id="db-hint">Creates a new table in an Oracle, SQL Server, PostgreSQL or MySQL database with the validated records. Same gate as every load: steward sign-off and no open critical defects.</p>
+    <div class="grid form">
+      <label>Target connection<select id="db-conn"></select></label>
+      <label>Schema<input id="db-schema" maxlength="128" placeholder="connection default"></label>
+      <label>New table name<input id="db-table" maxlength="30" value="MIG_BP_RUN{{ run_id }}"></label>
+      <label>If the table exists
+        <select id="db-mode"><option value="create">stop (safe)</option><option value="replace">replace it</option></select></label>
+      <label class="check"><input type="checkbox" id="db-src"> Also deliver the raw legacy values (SRC_*)</label>
+      <div class="wide"><button class="btn" id="db-preview">Show table &amp; SQL</button> <button class="btn primary" id="db-load">Deliver</button></div>
+    </div>
+    <pre id="db-ddl" class="ddl hidden"></pre>
+    <div id="db-history"></div>
+  </section>
+  <section class="card">
+    <h2>Rule-aggregated defects</h2>
+    <div id="defects"><p class="muted">Loading...</p></div>
+  </section>
+</section>
+
+<section id="panel-construction" role="tabpanel" aria-labelledby="tab-construction" class="hidden">
+  <div id="construction-banner" class="banner hidden"></div>
+  <div id="construction-cards" class="cards"></div>
+  <section class="card">
+    <h2>Fields that need data</h2>
+    <p class="muted">These mandatory SAP fields are empty for some records. A business steward fills them in Excel; no SQL needed.</p>
+    <div id="construction-fields"><p class="muted">Loading...</p></div>
+  </section>
+  <section class="card">
+    <h2>1. Download the construction template</h2>
+    <p class="muted">One row per incomplete record. Grey cells are read-only context; amber cells are for you to fill, with drop-downs where SAP has a fixed list.</p>
+    <button class="btn primary" id="download-template">
+      <svg class="icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Download Construction Template (.xlsx)
+    </button>
+  </section>
+  <section class="card">
+    <h2>2. Upload the completed template</h2>
+    <label class="dropzone" id="dropzone" for="construction-file" tabindex="0">
+      <svg class="icon" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path d="M12 16V4m0 0L8 8m4-4l4 4M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <strong>Upload Completed Template (.xlsx)</strong>
+      <span class="muted">Drop the file here or click to choose it</span>
+      <input type="file" id="construction-file" class="visually-hidden" accept=".xlsx">
+    </label>
+    <label class="check"><input type="checkbox" id="auto-revalidate" checked> Re-validate automatically after a successful upload</label>
+    <div id="upload-result"></div>
+  </section>
+  <section class="card">
+    <h2>3. Re-validate</h2>
+    <p class="muted">Re-runs pre-load validation on the merged data, updates the defects and the gate. An earlier load sign-off is revoked because the data changed.</p>
+    <button class="btn" id="revalidate">Re-validate now</button>
+  </section>
+  <section class="card">
+    <h2>Activity log</h2>
+    <div id="construction-log"><p class="muted">Loading...</p></div>
+  </section>
 </section>
 {% endblock %}
-{% block scripts %}<script src="/static/js/governance.js"></script>{% endblock %}
+{% block scripts %}<script src="/static/js/governance.js"></script><script src="/static/js/construction.js"></script>{% endblock %}

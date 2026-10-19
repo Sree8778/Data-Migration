@@ -9,7 +9,35 @@
       <select name="system_type"><option>FLAT_FILE</option><option>ORACLE</option><option>SAP_ECC</option><option>MSSQL</option></select></label>
     <label>Table name<input name="table_name" required placeholder="AR_CUSTOMERS"></label>
     <label>Primary key column(s)<input name="primary_key_columns" placeholder="CUST_ID"></label>
-    <label class="wide">Extract file (.csv or .parquet)<input type="file" name="file" accept=".csv,.parquet" required></label>
+    <label class="wide">Extract file (CSV / TSV / pipe-delimited, Excel .xlsx, JSON / NDJSON, fixed-width, Parquet; optionally .gz or .zip)
+      <input type="file" id="reg-file" name="file" accept=".csv,.tsv,.txt,.psv,.dat,.xlsx,.json,.ndjson,.jsonl,.parquet,.gz,.zip" required></label>
+
+    <div id="read-options" class="wide hidden">
+      <h3>How the file is read <span class="muted">(detected automatically; correct anything that looks wrong)</span></h3>
+      <div id="detected" class="legend"></div>
+      <div class="grid form">
+        <label>Format
+          <select id="opt-format"><option value="">auto-detect</option><option value="delimited">Delimited text</option><option value="excel">Excel</option>
+            <option value="json">JSON / NDJSON</option><option value="fixed">Fixed-width</option><option value="parquet">Parquet</option></select></label>
+        <label>Delimiter
+          <select id="opt-delimiter"><option value="">auto-detect</option><option value=",">comma ,</option><option value=";">semicolon ;</option>
+            <option value="&#9;">tab</option><option value="|">pipe |</option></select></label>
+        <label>Encoding<input id="opt-encoding" placeholder="auto (utf-8, cp1252, utf-16...)"></label>
+        <label>Excel sheet<select id="opt-sheet"><option value="">first visible sheet</option></select></label>
+        <label>Excel header row<input id="opt-header-row" type="number" min="1" value="1"></label>
+        <label>Skip leading lines<input id="opt-skip" type="number" min="0" value="0"></label>
+        <label>File inside zip<select id="opt-member"><option value="">(only one file)</option></select></label>
+        <label>Extra values read as empty<input id="opt-nulls" placeholder="NULL, \N"></label>
+        <label>Expected row count <span class="muted">(control total from the source system)</span><input id="opt-expected" type="number" min="0"></label>
+        <label class="check"><input type="checkbox" id="opt-header" checked> First row holds column names</label>
+        <label class="wide">Fixed-width layout, one column per line as <code>name,start,width</code>
+          <textarea id="opt-fixed" rows="3" spellcheck="false" placeholder="CUST_ID,1,8&#10;CUST_NAME,9,40"></textarea></label>
+        <div class="wide"><button type="button" class="btn" id="refresh-preview">Refresh preview</button></div>
+      </div>
+      <div id="preview-warnings"></div>
+      <div id="preview-table"></div>
+    </div>
+
     <div class="wide"><button class="btn primary" type="submit">Register &amp; upload</button></div>
   </form>
 </section>

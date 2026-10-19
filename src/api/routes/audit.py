@@ -18,6 +18,8 @@ from src.api.schemas import (
     RunSummary,
 )
 from src.db.models import CatColumn, CatTable, MapFieldRule, MigMigrationRun
+from src.schemas.sap import CheckResult
+from src.schemas.source import SnapshotInfo
 from src.schemas.validation import ROOT_CAUSE_BY_KIND, Severity, kind_for_signature
 from src.services.metadata_service import NotFoundError
 
@@ -84,6 +86,35 @@ def get_run(run_id: int, ctx: AppContext = Depends(get_ctx)) -> RunSummary:
         return _run_summary(ctx, run)
 
 
+def _add_extract_checks(report, snapshot_path) -> None:
+    """Stage zero of the audit trail: the pipeline read exactly what was landed, and the landing matched the source."""
+    if not snapshot_path.is_file():
+        return
+    snap = SnapshotInfo.model_validate_json(snapshot_path.read_text(encoding="utf-8"))
+    report.checks.append(CheckResult(
+        name="extract_matches_landed_snapshot", passed=report.counts.extracted == snap.rows_landed,
+        detail=f"pipeline extracted {report.counts.extracted} row(s); the {snap.format} snapshot holds {snap.rows_landed} "
+               f"(file {snap.original_filename}, SHA-256 {snap.original_sha256[:12]}...)"))
+    if snap.control_status == "MATCH":
+        report.checks.append(CheckResult(
+            name="source_control_total_verified", passed=snap.rows_landed == snap.expected_rows,
+            detail=f"landed row count matches the {snap.expected_rows} row(s) reported by the source system"))
+
+
+def _add_db_delivery_checks(report, run_dir) -> None:
+    """Every delivery into a database target must have put exactly the validated records there (counted in the target itself)."""
+    from src.services.db_loader_service import DbLoaderService
+    latest = {}                                       # a table that was replaced holds only its latest delivery
+    for d in DbLoaderService.deliveries(run_dir):
+        latest[(d["connection"], d["schema"], d["table"])] = d
+    for d in latest.values():
+        report.checks.append(CheckResult(
+            name=f"db_delivery_{d['dialect']}_{d['schema']}.{d['table']}",
+            passed=d["rows_in_target"] == d["rows_loaded"] == d["valid_records"],
+            detail=f"{d['rows_in_target']} row(s) counted in {d['dialect']} {d['database']}:{d['schema']}.{d['table']} after the load; "
+                   f"{d['rows_loaded']} sent; {d['valid_records']} validated record(s) in the run (loaded by {d['loaded_by']} at {d['loaded_at']})"))
+
+
 # ------------------------------------------------------------------ reconciliation + downloads
 @router.get("/reconciliation/{run_id}", response_model=ReconciliationResponse)
 def get_reconciliation(run_id: int, ctx: AppContext = Depends(get_ctx)) -> ReconciliationResponse:
@@ -91,6 +122,8 @@ def get_reconciliation(run_id: int, ctx: AppContext = Depends(get_ctx)) -> Recon
     report = ctx.reconciliation.generate_reconciliation_report(run_id, ctx.load_validation_report(run_id))
     directory = ctx.run_dir(run_id)
     directory.mkdir(parents=True, exist_ok=True)
+    _add_extract_checks(report, directory / "source_snapshot.json")
+    _add_db_delivery_checks(report, directory)
     exports = ctx.reconciliation.export(report, directory)
     cockpit = directory / "cockpit.xlsx"
     return ReconciliationResponse(

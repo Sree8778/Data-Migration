@@ -42,6 +42,214 @@ class SourceRegistration(BaseModel):
     columns_registered: int = 0
     filename: Optional[str] = None
     bytes_stored: int = 0
+    format: Optional[str] = None
+    rows_landed: Optional[int] = None
+    control_status: Optional[str] = None
+    warnings: list[str] = Field(default_factory=list)
+    origin: Optional[dict[str, Any]] = None
+    extract_seconds: Optional[float] = None
+
+
+Kind = Literal["postgresql", "oracle", "mssql", "mysql", "azure_blob", "s3", "sftp"]
+
+
+class ConnectionIn(_In):
+    name: str = Field(min_length=1, max_length=64)
+    dialect: Kind
+    host: str = Field(min_length=1, max_length=253)
+    port: Optional[int] = Field(default=None, ge=1, le=65535)
+    database: str = Field(default="", max_length=128, description="database name; for Oracle the service name")
+    user: str = Field(min_length=1, max_length=128)
+    password: Optional[str] = Field(default=None, max_length=512, repr=False, description="kept in server memory only, never stored")
+    password_env: Optional[str] = Field(default=None, max_length=64, description="name of a server environment variable that holds the password")
+    options: dict[str, Any] = Field(default_factory=dict)
+    role: Literal["source", "target"] = Field(default="source", description="target = the application may create tables and load into this database")
+    default_schema: Optional[str] = Field(default=None, max_length=128, description="target: the schema new tables are created in")
+
+
+class ConnectionTestIn(_In):
+    name: Optional[str] = Field(default=None, description="test a saved connection (optionally with a fresh password)")
+    dialect: Optional[Kind] = None
+    host: Optional[str] = None
+    port: Optional[int] = Field(default=None, ge=1, le=65535)
+    database: str = ""
+    user: Optional[str] = None
+    password: Optional[str] = Field(default=None, max_length=512, repr=False)
+    password_env: Optional[str] = Field(default=None, max_length=64, description="name of a server environment variable that holds the password")
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConnectionOut(BaseModel):
+    name: str
+    dialect: str
+    label: str
+    host: str
+    port: int
+    database: str
+    user: str
+    password_source: str          # memory | env:NAME | missing - never the password
+    options: dict[str, Any]
+    role: str = "source"
+    default_schema: Optional[str] = None
+    created_by: str
+    updated_at: str
+
+
+class DialectInfo(BaseModel):
+    dialect: str
+    label: str
+    default_port: int
+    database_label: str
+    family: str = "database"       # database | storage
+
+
+class PresetInfo(BaseModel):
+    id: str
+    label: str
+    dialect: str
+    port: int
+    options: dict[str, Any]
+    hint: str
+
+
+class ConnectionTestResult(BaseModel):
+    ok: bool
+    detail: str
+    server_version: Optional[str] = None
+    latency_ms: int = 0
+    schemas: Optional[int] = None      # schemas visible (databases) or containers / buckets visible (storage)
+    host_key: Optional[str] = None     # SFTP: the key the server presented when it is not yet trusted
+
+
+class WriteTestIn(_In):
+    schema_name: str = Field(min_length=1, max_length=128)
+
+
+class DbLoadRequest(_In):
+    connection: str
+    schema_name: Optional[str] = Field(default=None, max_length=128, description="default: the target connection's default schema")
+    table_name: str = Field(min_length=1, max_length=30)
+    mode: Literal["create", "replace"] = Field(default="create", description="create fails if the table exists; replace drops it first")
+    include_source_columns: bool = Field(default=False, description="also deliver the raw legacy values (SRC_*)")
+    batch_size: int = Field(default=1000, ge=1, le=10000)
+
+
+class DbLoadPreviewColumn(BaseModel):
+    name: str
+    type: str
+    nullable: bool
+
+
+class DbLoadPreview(BaseModel):
+    run_id: int
+    connection: str
+    schema_name: str
+    table: str
+    rows: int
+    columns: list[DbLoadPreviewColumn]
+    ddl: str
+
+
+class DbLoadResult(BaseModel):
+    run_id: int
+    connection: str
+    dialect: str
+    host: str
+    port: int
+    database: str
+    schema_name: str
+    table: str
+    mode: str
+    columns: int
+    include_source_columns: bool
+    valid_records: int
+    rows_loaded: int
+    rows_in_target: int
+    replaced_existing: bool
+    seconds: float
+    loaded_by: str
+    loaded_at: str
+    ddl: str
+
+
+class TargetKind(BaseModel):
+    kind: Literal["sandbox", "cockpit", "live"]
+    label: str
+    available: bool
+    simulated: bool
+    testable: bool
+    detail: str
+
+
+class TargetsResponse(BaseModel):
+    object_name: str
+    catalog_ready: bool
+    targets: list[TargetKind]
+    databases: list[ConnectionOut] = []   # saved database TARGET connections (Oracle, SQL Server, PostgreSQL, MySQL)
+
+
+class TargetTestRequest(_In):
+    target: Literal["sandbox", "live"]
+
+
+class TargetTestResult(BaseModel):
+    target: str
+    ok: bool
+    detail: str
+    latency_ms: int
+
+
+class StorageFile(BaseModel):
+    name: str
+    key: str
+    size: Optional[int] = None
+    modified: Optional[str] = None
+    is_dir: bool
+
+
+class FileImportRequest(_In):
+    connection: str
+    container: str = Field(min_length=1, max_length=256)
+    key: str = Field(min_length=1, max_length=1024)
+    system_name: Optional[str] = Field(default=None, max_length=128, description="default: the connection name")
+    table_name: Optional[str] = Field(default=None, max_length=128, description="default: derived from the file name")
+    business_name: Optional[str] = Field(default=None, max_length=256)
+    primary_key_columns: Optional[list[str]] = None
+    options: Optional[dict[str, Any]] = Field(default=None, description="LandingOptions (format, encoding, delimiter, sheet...); omitted values are detected")
+    expected_rows: Optional[int] = Field(default=None, ge=0, description="control total from the source system")
+
+
+class DbTable(BaseModel):
+    schema_name: str
+    name: str
+    kind: str
+    row_estimate: Optional[int] = None
+
+
+class DbColumn(BaseModel):
+    name: str
+    data_type: str
+    length: Optional[int]
+    nullable: bool
+    is_primary_key: bool
+    position: int
+
+
+class DbPreview(BaseModel):
+    columns: list[DbColumn]
+    rows: list[list[str]]
+
+
+class DbImportRequest(_In):
+    connection: str
+    schema_name: str = Field(min_length=1, max_length=128)
+    table: str = Field(min_length=1, max_length=128)
+    columns: Optional[list[str]] = Field(default=None, description="subset of columns; default all")
+    system_name: Optional[str] = Field(default=None, max_length=128, description="default: the connection name")
+    table_name: Optional[str] = Field(default=None, max_length=128, description="default: the source table name")
+    business_name: Optional[str] = Field(default=None, max_length=256)
+    primary_key_columns: Optional[list[str]] = Field(default=None, description="default: the primary key defined in the database")
+    control_total: bool = Field(default=True, description="reject the extract unless the rows read equal the source row count taken in the same transaction")
 
 
 class TableSummary(BaseModel):
@@ -53,6 +261,8 @@ class TableSummary(BaseModel):
     last_profiled_at: Optional[datetime]
     has_source_file: bool
     column_count: int
+    source_format: Optional[str] = None
+    rows_landed: Optional[int] = None
 
 
 # ------------------------------------------------------------------ profiling
@@ -99,6 +309,13 @@ class MappingSetSummary(BaseModel):
     approved_by: Optional[str]
     approved_at: Optional[datetime]
     rule_count: int
+    archived: bool = False
+    archive_reason: Optional[str] = None
+    archived_by: Optional[str] = None
+
+
+class ArchiveRequest(_In):
+    reason: str = Field(min_length=3, max_length=300)
 
 
 class RuleDetail(BaseModel):
@@ -124,6 +341,7 @@ class RuleDetail(BaseModel):
 
 
 class SourceColumnView(BaseModel):
+    missing_from_file: bool = False  # still in the catalog (a rule uses it) but not in the landed file
     column_name: str
     data_type: str
     null_ratio: Optional[float]
@@ -143,6 +361,37 @@ class GenerateResponse(BaseModel):
     mapping_set_id: int
     report: MappingGenerationReport
     mapping: MappingDetail
+
+
+class JobProgress(BaseModel):
+    current: int  # columns completed so far
+    total: int
+    column: Optional[str] = None  # column the model is evaluating right now
+    message: str
+
+
+class JobError(BaseModel):
+    code: str
+    detail: Any
+
+
+class JobStatus(BaseModel):
+    job_id: str
+    kind: str
+    source_table_id: int
+    started_by: str
+    status: Literal["queued", "running", "cancelling", "succeeded", "failed", "cancelled"]
+    created_at: datetime
+    finished_at: Optional[datetime] = None
+    progress: JobProgress
+    result: Optional[GenerateResponse] = None  # set when status == succeeded
+    error: Optional[JobError] = None
+    already_running: bool = False
+
+
+class MappingSetCreateRequest(_In):
+    source_table_id: int
+    target_object: str = Field(default="BUSINESS_PARTNER", min_length=1, max_length=64)
 
 
 class RuleUpdate(_In):
@@ -255,6 +504,54 @@ class ReconciliationResponse(BaseModel):
     export_urls: dict[str, str]
 
 
+class KeyAdd(_In):
+    api_key: str = Field(min_length=16, max_length=256)
+    label: str = Field(default="", max_length=60)
+
+
+class KeyTest(_In):
+    api_key: Optional[str] = Field(default=None, min_length=16, max_length=256)
+    key_hash: Optional[str] = Field(default=None, min_length=4, max_length=64)
+
+
+class KeyInfo(BaseModel):
+    key_hash: str
+    masked_key: str
+    label: str
+    source: str
+    status: Literal["ACTIVE", "RATE_LIMITED", "QUOTA_EXHAUSTED", "INVALID"]
+    available_at: Optional[datetime]
+    seconds_until_available: int
+    request_count: int
+    success_count: int
+    error_count: int
+    rate_limit_count: int
+    last_error: Optional[str]
+    last_used_at: Optional[datetime]
+    added_at: datetime
+
+
+class KeyPoolResponse(BaseModel):
+    provider: str
+    model: str
+    total: int
+    active: int
+    cooling_down: int
+    quota_exhausted: int
+    invalid: int
+    persisted: bool
+    keys: list[KeyInfo]
+
+
+class KeyTestResult(BaseModel):
+    ok: bool
+    classification: str
+    status_code: Optional[int]
+    detail: str
+    latency_ms: int
+    model: str
+
+
 class HealthResponse(BaseModel):
     status: str
     database: str
@@ -263,4 +560,6 @@ class HealthResponse(BaseModel):
     sap_default_target: str
     workspace: str
     target_catalog_ready: bool
+    llm_provider: str = "ollama"
+    gemini_keys_active: int = 0
     severity_levels: list[str] = [s.value for s in Severity]

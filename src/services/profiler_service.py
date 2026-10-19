@@ -98,8 +98,11 @@ class ProfilerService:
         self,
         path: str | Path,
         candidate_keys: list[list[str]] | None = None,
+        detected_types: dict[str, str] | None = None,
     ) -> TableProfileResult:
         """Profile a CSV or Parquet file.
+
+        `detected_types`: column -> type to report instead of the file's own (used for landed all-text snapshots).
 
         `candidate_keys`: key column sets to check for duplicates. When omitted, single
         columns that are fully populated and >= 95% unique are inferred as candidate keys.
@@ -127,12 +130,14 @@ class ProfilerService:
                 con.execute(f"SET memory_limit='{self._memory_limit_mb}MB'")
                 con.execute(f"SET threads={self._threads}")
                 con.execute(f"SET temp_directory={_lit(tmp)}")
-                return self._profile(con, path, fmt, raw_text, typed, candidate_keys)
+                return self._profile(con, path, fmt, raw_text, typed, candidate_keys, detected_types)
             finally:
                 con.close()
 
-    def _profile(self, con, path, fmt, raw_text, typed, candidate_keys) -> TableProfileResult:
+    def _profile(self, con, path, fmt, raw_text, typed, candidate_keys, detected_types=None) -> TableProfileResult:
         types = [(r[0], r[1]) for r in con.execute(f"DESCRIBE SELECT * FROM {typed}").fetchall()]
+        if detected_types:
+            types = [(n, detected_types.get(n, t)) for n, t in types]
         names = [n for n, _ in types]
         if not names:
             raise ValueError("source has no columns")

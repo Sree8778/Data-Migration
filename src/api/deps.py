@@ -45,3 +45,19 @@ def require_user(user: str = Depends(identify)) -> str:
     if user == ANONYMOUS:
         raise HTTPException(401, "identify yourself with the X-User header")
     return user
+
+
+def require_key_admin(user: str = Depends(require_user), ctx: AppContext = Depends(get_ctx)) -> str:
+    """Adding / removing API keys is restricted to MIGRATION_KEY_ADMINS when that list is configured."""
+    admins = ctx.settings.key_admins
+    if admins is not None and user.casefold() not in {a.casefold() for a in admins}:
+        raise HTTPException(403, f"'{user}' is not allowed to manage API keys")
+    return user
+
+
+def require_connection_admin(user: str = Depends(require_user), ctx: AppContext = Depends(get_ctx)) -> str:
+    """Creating / deleting / testing database connections (the server connects outbound) can be restricted to MIGRATION_CONNECTION_ADMINS."""
+    admins = ctx.settings.connection_admins
+    if admins is not None and user.casefold() not in {a.casefold() for a in admins}:
+        raise HTTPException(403, f"'{user}' is not allowed to manage database connections")
+    return user

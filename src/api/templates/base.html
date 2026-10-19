@@ -4,9 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title }} - ERP Migration Accelerator</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/css/app.css">
+  {% block head %}{% endblock %}
 </head>
-<body>
+<body class="{{ 'embedded' if embed else '' }}">
+  {% if not embed %}
   <header class="topbar">
     <a class="brand" href="/">ERP Migration Accelerator</a>
     <nav aria-label="Primary">
@@ -15,18 +18,24 @@
       {% if run_id %}<a href="/ui/governance/{{ run_id }}">Governance</a><a href="/ui/certificate/{{ run_id }}">Certificate</a>{% endif %}
       <a href="/docs" target="_blank" rel="noopener">API</a>
     </nav>
+    <button type="button" class="key-indicator gray" id="key-indicator" aria-haspopup="dialog" title="Gemini API key stack">
+      Gemini Keys: <span id="key-count">&hellip;</span>
+    </button>
     <div class="actor">
       <label for="actor">Acting as</label>
       <input id="actor" autocomplete="off" placeholder="your user id">
       <input id="apikey" type="password" autocomplete="off" placeholder="API key (if enabled)">
     </div>
   </header>
+  {% endif %}
   <main class="page" id="page" data-table-id="{{ table_id }}" data-run-id="{{ run_id }}">
-    <h1>{{ title }}</h1>
+    {% if not embed %}<h1>{{ title }}</h1>{% endif %}
     {% block content %}{% endblock %}
   </main>
+  {% if not embed %}{% include "_key_modal.html" %}{% endif %}
   <div id="toast" role="status" aria-live="polite"></div>
   <script src="/static/js/common.js"></script>
+  <script src="/static/js/keys.js"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

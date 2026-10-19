@@ -1,0 +1,21 @@
+  <dialog id="key-modal" aria-labelledby="key-modal-title">
+    <form method="dialog" class="dialog-head">
+      <h2 id="key-modal-title">API Key Stack</h2>
+      <button class="btn small" value="close">Close</button>
+    </form>
+    <p class="muted" id="key-provider"></p>
+    <div id="key-list"></div>
+    <h3>Add a Gemini API key</h3>
+    <form id="key-form" class="grid form" autocomplete="off">
+      <label class="wide">API key
+        <input type="password" id="key-input" required minlength="16" maxlength="256" autocomplete="off" spellcheck="false" placeholder="AIza...">
+      </label>
+      <label>Label (optional)<input id="key-label" maxlength="60" placeholder="e.g. team-account-2"></label>
+      <div class="wide">
+        <button type="button" class="btn" id="key-test">Test key</button>
+        <button type="submit" class="btn primary">Add to stack</button>
+        <span id="key-test-result" class="muted"></span>
+      </div>
+    </form>
+    <p class="muted">Keys stay in server memory unless key persistence is configured, and are only ever shown masked. When a key hits its rate limit or quota the next healthy key is used automatically.</p>
+  </dialog>

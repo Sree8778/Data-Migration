@@ -1,0 +1,38 @@
+{
+  "banner": "Database: ok | Auth: dev-header | Jira: dry-run | SAP target: sandbox (simulated) (identity from the \"Acting as\" field)",
+  "register_toast": "Registered table #9 (10 columns)",
+  "table_id": 9,
+  "profile_cards": [
+    "Rows 1,980",
+    "Columns 10",
+    "Average health 89.3",
+    "Duplicate rows 0 (0.0%)",
+    "Inferred keys 3"
+  ],
+  "profile_columns": 10,
+  "profile_health": {
+    "CUST_ID": "100",
+    "CUST_NAME": "100",
+    "TAX_ID": "73",
+    "EMAIL": "78",
+    "PHONE": "81",
+    "ADDR_STREET": "100",
+    "CITY": "97",
+    "COUNTRY": "84",
+    "POSTAL_CODE": "94",
+    "PAYMENT_TERMS": "87"
+  },
+  "profile_flags": {
+    "CUST_ID": "candidate key",
+    "CUST_NAME": "candidate key",
+    "TAX_ID": "many nulls",
+    "EMAIL": "many nulls",
+    "ADDR_STREET": "candidate key",
+    "COUNTRY": "non-ISO country values"
+  },
+  "key_indicator": "Gemini Keys: none",
+  "key_dialog_rows": [
+    "Nothing to show."
+  ],
+  "browser_problems": []
+}

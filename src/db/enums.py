@@ -10,6 +10,8 @@ class SystemType(str, enum.Enum):
     SAP_ECC = "SAP_ECC"
     SAP_S4HANA = "SAP_S4HANA"
     MSSQL = "MSSQL"
+    POSTGRESQL = "POSTGRESQL"
+    MYSQL = "MYSQL"
     FLAT_FILE = "FLAT_FILE"
 
 

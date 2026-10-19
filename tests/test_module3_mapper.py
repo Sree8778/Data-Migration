@@ -36,7 +36,7 @@ from src.services.llm_mapper_service import (
     LLMOutputError,
     LLMUnavailableError,
 )
-from src.services.mapping_orchestrator import MappingOrchestrator
+from src.services.mapping_orchestrator import TOP_K, MappingOrchestrator
 from src.services.metadata_service import MappingValidationError, NotFoundError
 from src.services.rule_validator import RuleValidator, validate_sql_expression
 
@@ -364,7 +364,8 @@ def test_end_to_end_mapping_persists_draft_rules(service, session_factory, embed
         assert rules["POSTAL_CODE"].is_mandatory_target is False
 
         # -- review flags live in ai_reasoning
-        assert rules["CUST_NAME"].ai_reasoning == "because"
+        # CUST_NAME is copied straight into NAME_ORG1 (40) but the source column holds up to 50 characters: the evidence check flags it
+        assert rules["CUST_NAME"].ai_reasoning == "[NEEDS_REVIEW] source values reach 50 characters but NAME_ORG1 holds 40 | because"
         assert rules["FAX_NO"].ai_reasoning.startswith("[NEEDS_REVIEW]") and "confidence 0.40" in rules["FAX_NO"].ai_reasoning
         assert rules["CUST_TYPE"].ai_reasoning.startswith("[NEEDS_REVIEW]") and "lookups" in rules["CUST_TYPE"].ai_reasoning
 
@@ -381,7 +382,7 @@ def test_end_to_end_mapping_persists_draft_rules(service, session_factory, embed
         "FAX_NO": ProposalOutcome.SAVED, "CREDIT_LIMIT": ProposalOutcome.REJECTED,
         "MISC_CODE": ProposalOutcome.REJECTED, "GARBAGE_COL": ProposalOutcome.ERROR,
     }
-    assert outcome["CUST_NAME"].status == ReviewStatus.OK
+    assert outcome["CUST_NAME"].status == ReviewStatus.NEEDS_REVIEW and outcome["CUST_NAME"].reasons == ["source values reach 50 characters but NAME_ORG1 holds 40"]
     assert outcome["FAX_NO"].status == ReviewStatus.NEEDS_REVIEW
     assert any("not found in target catalog" in r for r in outcome["CREDIT_LIMIT"].reasons)
     assert any("semicolons" in r for r in outcome["MISC_CODE"].reasons)
@@ -390,7 +391,7 @@ def test_end_to_end_mapping_persists_draft_rules(service, session_factory, embed
     assert "BUT000.BU_GROUP" in report.unmapped_mandatory_targets
     assert "BUT000.TYPE" not in report.unmapped_mandatory_targets
 
-    # -- prompts: temperature 0, 5 candidates, <=3 masked samples, unprofiled column never sent
+    # -- prompts: temperature 0, TOP_K candidates, <=3 masked samples, unprofiled column never sent
     asked = {json.loads(next(m["content"] for m in b["messages"] if m["role"] == "user"
                              and m["content"].startswith("{")))["source_column"]["name"] for b in transport.requests}
     assert "UNPROFILED_COL" not in asked and "CUST_NAME" in asked
@@ -398,7 +399,7 @@ def test_end_to_end_mapping_persists_draft_rules(service, session_factory, embed
         assert body["temperature"] == 0.0 and body["model"] == DEFAULT_MODEL
     email_req = next(b for b in transport.requests if '"EMAIL"' in b["messages"][1]["content"])
     payload = json.loads(email_req["messages"][1]["content"])
-    assert len(payload["candidates"]) == 5
+    assert len(payload["candidates"]) == TOP_K
     assert len(payload["source_column"]["sample_values_masked"]) == 3
     assert "john.doe" not in email_req["messages"][1]["content"]  # PII is masked before leaving the process
 
@@ -468,3 +469,13 @@ def test_live_ollama_returns_contract_valid_recommendation(embeddings):
                               null_ratio=0.0, distinct_ratio=0.001, sample_values=["US", "DE", "FR"], table_name="AR_CUSTOMERS")
     result = llm.recommend(ctx, embeddings.get_top_k_candidates("COUNTRY_CD", "VARCHAR2", 5))
     assert result is None or isinstance(result, FieldMappingRecommendation)
+
+
+def test_sample_values_rescue_cryptic_names_without_losing_the_name_ranking(embeddings):
+    plain = [c.column_name for c in embeddings.get_top_k_candidates("ORT01", "VARCHAR2", 8)]
+    with_samples = [c.column_name for c in embeddings.get_top_k_candidates("ORT01", "VARCHAR2", 8, ["Berlin", "München", "Dresden", "Hamburg"])]
+    assert "CITY1" in with_samples  # a legacy name that means nothing to the model is placed by what it contains
+    assert set(plain[:4]) <= set(with_samples)  # ...while the name-only ranking keeps its best hits
+    assert len(with_samples) == len(set(with_samples)) == 8
+    assert embeddings.get_top_k_candidates("ORT01", "VARCHAR2", 8, ["Berlin"]) == embeddings.get_top_k_candidates("ORT01", "VARCHAR2", 8, ["Berlin"])  # reproducible
+    assert embeddings.get_top_k_candidates("CUST_NAME", "VARCHAR2", 3, []) == embeddings.get_top_k_candidates("CUST_NAME", "VARCHAR2", 3)  # no samples = unchanged

@@ -1,0 +1,19 @@
+{
+  "rows_requested": 2000,
+  "blank_city": 62,
+  "blank_country": 42,
+  "unknown_country_text": 44,
+  "countries_missing_from_seed_lookup": 156,
+  "name_over_40_chars": 14,
+  "blank_postal": 81,
+  "leading_zero_postal": 53,
+  "unknown_payment_terms": 48,
+  "blank_payment_terms": 245,
+  "padded_names": 50,
+  "exact_duplicate_rows": 20,
+  "tax_id_duplicates": 40,
+  "email_duplicates": 20,
+  "fuzzy_name_pairs": 20,
+  "rows_written": 1980,
+  "note": "duplicate counts are injected pairs; blank/unknown counts are for the base rows. BU_GROUP, AKONT and KNVV.WAERS do not exist in this source at all (mandatory SAP fields that must be constructed)."
+}

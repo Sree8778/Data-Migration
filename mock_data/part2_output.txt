@@ -1,0 +1,137 @@
+[21:44:46] empty mapping set #6 created
+[21:44:48] 8 rules added through the form
+[21:44:49] lookups saved through the rule editor
+[21:44:50] approval: self-approval refused, steward approved -> 'SUBMITTED'
+[21:44:53] run #6 done in 2.2s; gate: BLOCKED - mapping APPROVED, run SUCCEEDED, validated: yes, o...
+[21:44:59] template: 1980 records, steward filled 14230 cells
+[21:45:03] after construction: READY FOR LOAD - mapping APPROVED, run SUCCEEDED, validated: yes, open
+[21:45:09] load: Simulated SAP load: 1886 loaded, 0 failed
+{
+  "new_set_toast": "Empty draft mapping set #6 created - add rules below",
+  "mapping_set_id": 6,
+  "placeholder_toast": "7 placeholder rule(s) added: BUT000.BU_GROUP, KNB1.BUKRS, KNB1.AKONT, KNVV.VKORG, KNVV.VTWEG, KNVV.SPART, KNVV.WAERS",
+  "studio_rule_count": 15,
+  "studio_unmapped_mandatory": "(none)",
+  "self_approval_toast": "SEGREGATION_OF_DUTIES: segregation of duties: 'alice' created mapping set 6 and cannot approve it",
+  "mapping_status": "SUBMITTED",
+  "run_id": 6,
+  "pipeline_seconds": 2.2,
+  "gate_blocked": "BLOCKED - mapping APPROVED, run SUCCEEDED, validated: yes, open CRITICAL defects: 11 11 CRITICAL defect(s) unresolved: ERR_MANDATORY_AKONT (1980), ERR_MANDATORY_BUKRS (1980), ERR_MANDATORY_BU_GROUP (1980), ERR_MANDATORY_SPART (1980), ERR_MANDATORY_VKORG (1980), ERR_MANDATORY_VTWEG (1980), ERR_MANDATORY_WAERS (1980), ERR_LOOKUP_FAILED_COUNTRY (216), ERR_MANDATORY_CITY1 (62), ERR_LOOKUP_FAILED_ZTERM (50), ERR_MANDATORY_COUNTRY (42)",
+  "defects_before": {
+    "ERR_MANDATORY_AKONT": 1980,
+    "ERR_MANDATORY_BUKRS": 1980,
+    "ERR_MANDATORY_BU_GROUP": 1980,
+    "ERR_MANDATORY_SPART": 1980,
+    "ERR_MANDATORY_VKORG": 1980,
+    "ERR_MANDATORY_VTWEG": 1980,
+    "ERR_MANDATORY_WAERS": 1980,
+    "ERR_LOOKUP_FAILED_COUNTRY": 216,
+    "ERR_MANDATORY_CITY1": 62,
+    "ERR_LOOKUP_FAILED_ZTERM": 50,
+    "ERR_MANDATORY_COUNTRY": 42,
+    "ERR_LENGTH_NAME_ORG1": 14
+  },
+  "quality_before": "Quality score: 0% | open defects: 12 (critical 11)",
+  "construction_cards_before": [
+    "Total incomplete records 1,980",
+    "Required target fields 10",
+    "Status Data needed"
+  ],
+  "construction_fields_before": [
+    "ADRC.CITY1 | 62 | MANDATORY / LOOKUP",
+    "ADRC.COUNTRY | 258 | MANDATORY / LOOKUP",
+    "KNB1.ZTERM | 50 | MANDATORY / LOOKUP",
+    "BUT000.BU_GROUP | 1,980 | MANDATORY / LOOKUP",
+    "KNB1.BUKRS | 1,980 | MANDATORY / LOOKUP",
+    "KNB1.AKONT | 1,980 | MANDATORY / LOOKUP",
+    "KNVV.VKORG | 1,980 | MANDATORY / LOOKUP",
+    "KNVV.VTWEG | 1,980 | MANDATORY / LOOKUP",
+    "KNVV.SPART | 1,980 | MANDATORY / LOOKUP",
+    "KNVV.WAERS | 1,980 | MANDATORY / LOOKUP"
+  ],
+  "template_headers": [
+    "SOURCE_PK",
+    "NAME_ORG1",
+    "STREET",
+    "POST_CODE1",
+    "LEGACY_CITY",
+    "LEGACY_COUNTRY",
+    "LEGACY_PAYMENT_TERMS",
+    "CITY1",
+    "COUNTRY",
+    "ZTERM",
+    "BU_GROUP",
+    "BUKRS",
+    "AKONT",
+    "VKORG",
+    "VTWEG",
+    "SPART",
+    "WAERS",
+    "OTHER_ISSUES",
+    "ROW_REF"
+  ],
+  "template_rows": 1980,
+  "steward_filled": {
+    "cells": 14230,
+    "left_blank": 0
+  },
+  "upload_toast": "14,230 cells merged in 1,980 records",
+  "revalidate_toast": "Re-validated: quality 99.26%, gate READY FOR LOAD",
+  "upload_result": "OK - 1,980 records updated, 14,230 cells merged, 0 rejected, 0 still empty (lineage rows: 14,230)",
+  "gate_after": "READY FOR LOAD - mapping APPROVED, run SUCCEEDED, validated: yes, open CRITICAL defects: 0",
+  "construction_log": [
+    "2026-10-07 01:45:01 | data.steward | REVALIDATE | quality 99.26%, 1 open defects, gate READY_FOR_LOAD",
+    "2026-10-07 01:45:01 | data.steward | UPLOAD | construction_template_completed.xlsx: 1,980 records fixed, 14,230 cells merged (OK)",
+    "2026-10-07 01:44:57 | data.steward | TEMPLATE | 1,980 records, fields: ADRC.CITY1, ADRC.COUNTRY, KNB1.ZTERM, BUT000.BU_GROUP, KNB1.BUKRS, KNB1.AKONT, KNVV.VKORG, KNVV.VTWEG, KNVV.SPART, KNVV.WAERS"
+  ],
+  "defects_after": {
+    "ERR_LOOKUP_FAILED_COUNTRY": "resolved",
+    "ERR_LOOKUP_FAILED_ZTERM": "resolved",
+    "ERR_MANDATORY_AKONT": "resolved",
+    "ERR_MANDATORY_BUKRS": "resolved",
+    "ERR_MANDATORY_BU_GROUP": "resolved",
+    "ERR_MANDATORY_CITY1": "resolved",
+    "ERR_MANDATORY_COUNTRY": "resolved",
+    "ERR_MANDATORY_SPART": "resolved",
+    "ERR_MANDATORY_VKORG": "resolved",
+    "ERR_MANDATORY_VTWEG": "resolved",
+    "ERR_MANDATORY_WAERS": "resolved",
+    "ERR_LENGTH_NAME_ORG1": "14"
+  },
+  "signoff_toast": "Load signed off by data.steward",
+  "cockpit_sheets": {
+    "General Data (BUT000)": 1886,
+    "BP Roles (BUT100)": 3772,
+    "Address Data (ADRC)": 1886,
+    "Company Code Data (KNB1)": 1886,
+    "Sales Org Data (KNVV)": 1886
+  },
+  "sap_toast": "Simulated SAP load: 1886 loaded, 0 failed",
+  "certificate_verdict": "RECONCILIATION PASSED - variance 0 row(s), complete, run SUCCEEDED / LOAD",
+  "certificate_counts": [
+    "Extracted 1,980",
+    "Transformed OK 1,966",
+    "Duplicate children 80",
+    "Rejected by validation 14",
+    "Valid for load 1,886",
+    "Loaded in SAP 1,886",
+    "Failed in SAP 0"
+  ],
+  "certificate_dropoff": [
+    "LOADED | 1,886 | Created in SAP with a business partner number. | ",
+    "SAP_LOAD_FAILED | 0 | Sent to SAP but rejected; the SAP message is stored in the lineage. | ",
+    "VALIDATION_REJECTED | 14 | Failed pre-load validation (ERR_LENGTH_NAME_ORG1=14); 14 of these already failed in transformation. | 100451, 100640, 100797, 100942,",
+    "DUPLICATE_CHILD | 80 | Merged into a surviving master record by deduplication; intentionally not loaded. | 101880, 101881, 101882, 101883, 101884",
+    "VALID_NOT_ATTEMPTED | 0 | Valid but never sent to SAP (load aborted or not run). | "
+  ],
+  "certificate_failed_checks": [],
+  "certificate_buttons_enabled": {
+    "#dl-cockpit": true,
+    "#dl-html": true,
+    "#dl-md": true
+  },
+  "browser_problems": [
+    "http 403: POST http://localhost:8000/api/governance/approve-mapping/6",
+    "console.error: Failed to load resource: the server responded with a status of 403 (Forbidden)"
+  ]
+}

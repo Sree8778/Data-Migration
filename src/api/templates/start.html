@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block head %}<link rel="stylesheet" href="/static/css/console.css">{% endblock %}
+{% block content %}
+<div class="hero">
+  <h1>ERP Migration Accelerator</h1>
+  <p>Move legacy customer data into SAP S/4HANA Business Partners, with a full audit trail.</p>
+</div>
+<div class="bands">
+  <div class="band">Welcome</div><div class="band">Support Center</div>
+  <div class="col">
+    <div class="entry"><span class="arrow">&gt;&gt;</span><div><div class="head">1. Get your data in</div>
+      <div class="links"><a href="/ui/sources" data-title="Sources &amp; Runs">Register a legacy source</a>
+      <span class="muted">CSV, Excel, JSON, fixed-width or Parquet; the format, encoding and delimiter are detected.</span></div></div></div>
+    <div class="entry"><span class="arrow">&gt;&gt;</span><div><div class="head">2. Profile and map</div>
+      <div class="links"><span class="muted">Select a table in the explorer, then use <strong>Profiler</strong> and <strong>Mapping</strong> in the toolbar. The AI proposes a mapping; you review it.</span></div></div></div>
+    <div class="entry"><span class="arrow">&gt;&gt;</span><div><div class="head">3. Run, review, release</div>
+      <div class="links"><span class="muted">Run the pipeline from the Mapping tab. The <strong>Governance hub</strong> shows defects and the load gate; the <strong>Certificate</strong> proves every record is accounted for.</span></div></div></div>
+  </div>
+  <div class="col">
+    <div class="entry"><span class="arrow">&gt;&gt;</span><div><div class="head">API reference</div>
+      <div class="links"><a href="/docs" target="_blank" rel="noopener">Interactive API documentation</a></div></div></div>
+    <div class="entry"><span class="arrow">&gt;&gt;</span><div><div class="head">Server status</div>
+      <div class="links"><a href="/api/health" target="_blank" rel="noopener">Health check (JSON)</a></div></div></div>
+    <div class="entry"><span class="arrow">&gt;&gt;</span><div><div class="head">Tips</div>
+      <div class="links"><span class="muted">Double-click an explorer item to open it in a tab. Right-hand status bar shows the Gemini key stack. Your identity is the <em>Acting as</em> field.</span></div></div></div>
+  </div>
+</div>
+<div class="start-stats" id="stats"></div>
+<div class="start-foot">Segregation of duties, lineage and reconciliation are enforced for every run.</div>
+{% endblock %}
+{% block scripts %}<script src="/static/js/start.js"></script>{% endblock %}

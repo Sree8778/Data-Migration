@@ -188,7 +188,8 @@ def test_full_lifecycle_upload_to_reconciliation(client, ctx, dataset):
             "target_table": "BUT000", "target_column": column, "rule_type": "STATIC_VALUE", "transformation_logic": logic})
         assert created.status_code == 201 and not created.json()["ai_suggested"] and created.json()["target_mandatory"]
     still = client.get(f"/api/mapping/{mapping_id}").json()["unmapped_mandatory_targets"]
-    assert still == ["KNB1.AKONT", "KNVV.WAERS"]  # the static defaults now cover BU_GROUP and TYPE
+    # the static defaults now cover BU_GROUP and TYPE; key fields the user must supply (BUKRS, VKORG...) still need rules
+    assert still == ["KNB1.BUKRS", "KNB1.AKONT", "KNVV.VKORG", "KNVV.VTWEG", "KNVV.SPART", "KNVV.WAERS"]
 
     # ---- transform + dedupe + validate on the dirty extract
     run1 = client.post(f"/api/pipeline/run/{mapping_id}", json={"wave_name": "WAVE_1"})
@@ -387,8 +388,10 @@ def test_source_registration_rules(client, ctx):
 
     no_table = client.post("/api/sources/register", data={"system_name": "X"}, files={"file": ("a.csv", b"A\n1\n", "text/csv")})
     assert no_table.status_code == 422 and "table_name" in no_table.json()["detail"]
-    wrong = client.post("/api/sources/register", data={"system_name": "X", "table_name": "T"}, files={"file": ("a.xlsx", b"x", "application/octet-stream")})
+    wrong = client.post("/api/sources/register", data={"system_name": "X", "table_name": "T"}, files={"file": ("a.docx", b"x", "application/octet-stream")})
     assert wrong.status_code == 422 and "unsupported file type" in wrong.json()["detail"]
+    fake_xlsx = client.post("/api/sources/register", data={"system_name": "X", "table_name": "T"}, files={"file": ("a.xlsx", b"x", "application/octet-stream")})
+    assert fake_xlsx.status_code == 422 and "not a valid .xlsx" in fake_xlsx.json()["detail"]
     empty = client.post("/api/sources/register", data={"system_name": "X", "table_name": "T"}, files={"file": ("a.csv", b"", "text/csv")})
     assert empty.status_code == 422
     bad_pk = client.post("/api/sources/register", data={"system_name": "X", "table_name": "T", "primary_key_columns": "NOPE"},
@@ -455,12 +458,12 @@ def test_ui_pages_serve_the_enterprise_light_theme(client):
     for token in ("#F8FAFC", "#0F172A", "--green-bg", "--amber-bg", "--red-bg", "--purple-bg", "nth-child(even)"):
         assert token in css.text, token
 
-    pages = {"/": "Workspace", "/ui/profiler/7": "Table Profiler", "/ui/studio/7": "Mapping Studio",
+    pages = {"/": "Management Center", "/ui/sources": "Sources &amp; Runs", "/ui/profiler/7": "Table Profiler", "/ui/studio/7": "Mapping Studio",
              "/ui/governance/3": "Defect &amp; Governance Hub", "/ui/certificate/3": "Reconciliation Certificate"}
     for path, title in pages.items():
         r = client.get(path)
         assert r.status_code == 200 and title in r.text and "/static/js/common.js" in r.text, path
-        assert r.headers["x-frame-options"] == "DENY" and r.headers["x-content-type-options"] == "nosniff"
+        assert r.headers["x-frame-options"] == "SAMEORIGIN" and r.headers["x-content-type-options"] == "nosniff"
         assert "script-src 'self'" in r.headers["content-security-policy"]
         assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", r.text), "inline script would violate the CSP"
     assert 'data-table-id="7"' in client.get("/ui/studio/7").text and 'data-run-id="3"' in client.get("/ui/governance/3").text

@@ -9,8 +9,9 @@ from fastapi import APIRouter, Depends
 
 from src.api.context import AppContext
 from src.api.deps import get_ctx, require_user
+from src.api.exceptions import PreflightBlockedError
 from src.api.schemas import MappingSetSummary, SignOffResponse
-from src.api.views import mapping_summary
+from src.api.views import mapping_summary, run_preflight
 from src.db.models import MapTableRule, MigMigrationRun
 from src.services.governance_service import GateBlockedError, NotAuthorizedError, SegregationOfDutiesError
 
@@ -19,12 +20,21 @@ router = APIRouter(prefix="/governance", tags=["governance"])
 
 def _summary(ctx: AppContext, mapping_set_id: int) -> MappingSetSummary:
     with ctx.session_factory() as s:
-        return mapping_summary(s, s.get(MapTableRule, mapping_set_id))
+        return mapping_summary(s, s.get(MapTableRule, mapping_set_id), ctx.archive.entries())
 
 
 @router.post("/submit-mapping/{mapping_set_id}", response_model=MappingSetSummary)
 def submit_mapping(mapping_set_id: int, ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user)):
-    """DRAFT -> SUBMITTED (hands the mapping set to a steward for review)."""
+    """DRAFT -> SUBMITTED (hands the mapping set to a steward for review).
+
+    First the pre-submission check runs: the rules' structure and a dry run on a sample of the real rows. A BLOCKER (a lookup rule with an
+    empty table, a rule that fails most of the sample, a source column the file does not have) refuses the submission with 422
+    PREFLIGHT_BLOCKED and the full report. The result is kept for the approver. MIGRATION_PREFLIGHT=warn / off relaxes this."""
+    mode = ctx.settings.preflight
+    if mode != "off":
+        report = run_preflight(ctx, mapping_set_id)
+        if mode == "enforce" and not report.can_submit:
+            raise PreflightBlockedError(report)
     ctx.governance.submit_mapping_set(mapping_set_id, user)
     return _summary(ctx, mapping_set_id)
 

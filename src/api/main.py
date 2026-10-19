@@ -15,23 +15,26 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from src.api.context import AppContext
 from src.api.deps import identify
 from src.api.errors import register_error_handlers
-from src.api.routes import admin, audit, governance, mapping, pipeline, sources
+from src.api.routes import admin, audit, connections, construction, governance, keys, mapping, pipeline, sources
 from src.api.settings import Settings
 from src.db.session import create_db_engine, create_session_factory
 from src.seeds.seed_sap_catalog import seed_sap_catalog
 
 BASE = Path(__file__).parent
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-       "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+       "connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'")  # 'self': the console hosts the pages as tabs
 
 PAGES = {
-    "/": ("index.html", "Workspace"),
+    "/": ("console.html", "Management Center"),
+    "/ui/start": ("start.html", "Start Page"),
+    "/ui/sources": ("index.html", "Sources & Runs"),
     "/ui/profiler/{table_id}": ("profiler.html", "Table Profiler"),
     "/ui/studio/{table_id}": ("studio.html", "Mapping Studio"),
     "/ui/governance/{run_id}": ("governance.html", "Defect & Governance Hub"),
@@ -54,6 +57,7 @@ def create_app(ctx: Optional[AppContext] = None, settings: Optional[Settings] = 
                 import logging
                 logging.getLogger("migration.api").warning("catalog seeding skipped: %s", exc)
         yield
+        ctx.jobs.shutdown()
 
     app = FastAPI(
         title="ERP Migration Accelerator API", version="1.0.0", lifespan=lifespan,
@@ -71,14 +75,14 @@ def create_app(ctx: Optional[AppContext] = None, settings: Optional[Settings] = 
     async def security_headers(request: Request, call_next):
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         if not request.url.path.startswith(("/docs", "/redoc", "/openapi")):
             response.headers.setdefault("Content-Security-Policy", CSP)
         return response
 
     api = APIRouter(prefix="/api", dependencies=[Depends(identify)])  # API-key mode protects every route
-    for module in (admin, sources, mapping, governance, pipeline, audit):
+    for module in (admin, sources, connections, mapping, governance, pipeline, audit, construction, keys):
         api.include_router(module.router)
     app.include_router(api)
     app.include_router(admin.public_router, prefix="/api")  # health: no credentials needed for probes
@@ -88,8 +92,13 @@ def create_app(ctx: Optional[AppContext] = None, settings: Optional[Settings] = 
 
     def page(template: str, title: str):
         async def render(request: Request, table_id: int = 0, run_id: int = 0):
-            return templates.TemplateResponse(request, template, {"title": title, "table_id": table_id, "run_id": run_id})
+            embed = request.query_params.get("embed") == "1"  # the console hosts pages as tabs: no page chrome of their own
+            return templates.TemplateResponse(request, template, {"title": title, "table_id": table_id, "run_id": run_id, "embed": embed})
         return render
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        return FileResponse(BASE / "static" / "favicon.svg", media_type="image/svg+xml")
 
     for path, (template, title) in PAGES.items():
         app.add_api_route(path, page(template, title), methods=["GET"], include_in_schema=False)

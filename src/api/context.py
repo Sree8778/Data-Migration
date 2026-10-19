@@ -11,36 +11,43 @@ Workspace layout (all paths derived from ids, so no extra database tables are ne
 
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 from typing import Callable, Optional
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from src.api.exceptions import NotConfiguredError
+from src.services._duckdb_util import bounded_connection, lit
+from src.api.archive import MappingArchive
+from src.connectors.store import ConnectionStore
+from src.services.db_loader_service import DbLoaderService
+from src.api.jobs import JobManager
 from src.api.settings import Settings
 from src.schemas.validation import ValidationReport
+from src.services.construction_service import ConstructionService
 from src.services.deduplication_engine import DeduplicationEngine
 from src.services.defect_service import DefectService
 from src.services.embedding_service import EmbeddingService
+from src.services.gemini_key_manager import GeminiKeyManager
 from src.services.execution_orchestrator import ExecutionOrchestrator
 from src.services.governance_service import GovernanceService
 from src.services.jira_service import JiraService
 from src.services.llm_mapper_service import LLMMapperService
 from src.services.lookup_service import LookupService
+from src.services.mapping_preflight import MappingPreflightService
 from src.services.mapping_orchestrator import MappingOrchestrator
 from src.services.metadata_service import MetadataService
 from src.services.profiler_service import ProfilerService
 from src.services.reconciliation_service import ReconciliationService
+from src.services.source_landing import SourceLandingService
 from src.services.rule_validator import RuleValidator
 from src.services.sap_client import HttpSapClient, SandboxSapClient, SapClient, SapConfig
 from src.services.transformation_engine import TransformationEngine
 from src.services.validation_engine import ValidationEngine
 
-SOURCE_SUFFIXES = (".csv", ".parquet")
-
-
-class NotConfiguredError(Exception):
-    """A requested capability (e.g. the live SAP target) has no configuration."""
+SOURCE_SUFFIXES = (".parquet", ".csv")  # landed snapshots are Parquet; .csv is kept for tables created before landing existed
 
 
 class AppContext:
@@ -52,6 +59,7 @@ class AppContext:
         encoder=None,
         jira: Optional[JiraService] = None,
         live_sap_client: Optional[Callable[[], SapClient]] = None,
+        gemini_keys: Optional[GeminiKeyManager] = None,
     ) -> None:
         self.settings = settings
         self.session_factory = session_factory
@@ -64,13 +72,22 @@ class AppContext:
         self.governance = GovernanceService(sf, self.defects, authorized_approvers=settings.approvers)
         self.jira = jira or JiraService(sf, self.defects)
         self.validation = ValidationEngine(sf)
-        self.executor = ExecutionOrchestrator(
-            sf, TransformationEngine(sf, self.lookups), DeduplicationEngine(), output_dir=self.workspace / "runs")
+        self.transformer = TransformationEngine(sf, self.lookups)
+        self.executor = ExecutionOrchestrator(sf, self.transformer, DeduplicationEngine(), output_dir=self.workspace / "runs")
+        self.preflight = MappingPreflightService(sf, self.transformer, self.validation, self.lookups)
         self.reconciliation = ReconciliationService(sf)
+        self.landing = SourceLandingService()
+        self.archive = MappingArchive(self.workspace)
+        self.connections = ConnectionStore(self.workspace, allowed_hosts=settings.db_allowed_hosts)
+        self.db_loader = DbLoaderService(sf)
+        self.construction = ConstructionService(sf, self.workspace / "runs", self.validation, self.defects, self.governance)
         self._llm = llm_mapper
+        self.gemini_keys = gemini_keys or GeminiKeyManager.from_env(persist_path=settings.gemini_keys_file)
+        self.llm_provider = getattr(llm_mapper, "provider", None) or os.environ.get("LLM_PROVIDER", "ollama").strip().lower()
         self._encoder = encoder
         self._mapping_orchestrator: Optional[MappingOrchestrator] = None
         self._live_sap_client = live_sap_client
+        self.jobs = JobManager()
         self._lock = threading.Lock()
         self._sandbox_next = 1000000001
         self.workspace.mkdir(parents=True, exist_ok=True)
@@ -81,8 +98,8 @@ class AppContext:
             if self._mapping_orchestrator is None:
                 sf = self.session_factory
                 embeddings = EmbeddingService(sf, encoder=self._encoder, cache_dir=self.workspace / "cache")
-                llm = self._llm or LLMMapperService()
-                self._mapping_orchestrator = MappingOrchestrator(sf, embeddings, llm, RuleValidator(sf))
+                llm = self._llm or LLMMapperService.from_env(gemini=self.gemini_keys)
+                self._mapping_orchestrator = MappingOrchestrator(sf, embeddings, llm, RuleValidator(sf), consistency_runs=self.settings.ai_consistency_runs)
             return self._mapping_orchestrator
 
     # ------------------------------------------------------------------ SAP clients
@@ -103,6 +120,10 @@ class AppContext:
             self._sandbox_next += used
 
     # ------------------------------------------------------------------ workspace paths
+    def preflight_file(self, mapping_set_id: int) -> Path:
+        """The last pre-submission check of a mapping set (what the approver sees)."""
+        return self.workspace / "preflight" / f"mapping_{mapping_set_id}.json"
+
     def table_dir(self, table_id: int) -> Path:
         return self.workspace / "tables" / str(table_id)
 
@@ -112,6 +133,16 @@ class AppContext:
             if candidate.is_file():
                 return candidate
         return None
+
+    def file_columns(self, table_id: int) -> Optional[set[str]]:
+        """Lower-cased column names of the CURRENT landed file, or None when nothing is landed. The catalog can still
+        hold columns of an earlier layout; this is what the file really has."""
+        path = self.source_file(table_id)
+        if path is None:
+            return None
+        reader = "read_parquet" if path.suffix.lower() in (".parquet", ".pq") else "read_csv_auto"
+        with bounded_connection(256) as con:
+            return {r[0].lower() for r in con.execute(f"DESCRIBE SELECT * FROM {reader}({lit(path.as_posix())})").fetchall()}
 
     def run_dir(self, run_id: int) -> Path:
         return self.workspace / "runs" / f"run_{run_id}"

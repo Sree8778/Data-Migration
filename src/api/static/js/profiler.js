@@ -40,8 +40,16 @@
   }
 
   async function load() {
-    try { render(await api("GET", "/api/profile/" + tableId)); }
-    catch (e) {
+    try {
+      const tables = await api("GET", "/api/tables");
+      const info = tables.find((t) => t.table_id === tableId);
+      if (!info || !info.last_profiled_at) {   // never profiled: nothing to fetch
+        $("#columns").innerHTML = '<p class="muted">' + esc(info ? "Not profiled yet - run profiling." : "Unknown table.") + "</p>";
+        $("#dupes").innerHTML = ""; $("#summary").innerHTML = "";
+        return;
+      }
+      render(await api("GET", "/api/profile/" + tableId));
+    } catch (e) {
       $("#columns").innerHTML = '<p class="muted">' + esc(e.status === 404 ? "Not profiled yet - run profiling." : e.message) + "</p>";
       $("#dupes").innerHTML = ""; $("#summary").innerHTML = "";
     }

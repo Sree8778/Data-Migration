@@ -2,14 +2,33 @@
 {% block content %}
 <div class="toolbar">
   <label>Mapping set <select id="mapping-select"></select></label>
+  <label class="muted"><input type="checkbox" id="show-archived"> show archived</label>
+  <button class="btn" id="archive-mapping" title="Hide an obsolete mapping set. Nothing is deleted and it can be restored.">Archive</button>
   <button class="btn" id="generate">Generate AI mapping</button>
+  <label class="muted" title="The model is asked this many times about every column. A column whose answers differ is flagged 'unstable' for a person to decide. 1 is fastest.">AI runs per column
+    <select id="consistency"><option value="">server default</option><option value="1">1 (fastest)</option><option value="2">2</option><option value="3">3 (most careful)</option></select></label>
+  <button class="btn" id="new-set">New empty mapping set</button>
+  <button class="btn" id="placeholders" title="Add a to-be-constructed rule for every mandatory SAP field that has no rule">Add placeholders for missing mandatory fields</button>
   <button class="btn" id="add-rule-toggle">Add manual rule</button>
   <span class="spacer"></span>
   <span id="mapping-status"></span>
+  <button class="btn" id="preflight" title="Dry-run the rules on a sample of the real rows and check their structure. Nothing is saved except the report.">Check rules on sample</button>
   <button class="btn" id="submit-mapping">Submit for approval</button>
   <button class="btn" id="approve-mapping">Approve</button>
   <button class="btn primary" id="run-pipeline">Run pipeline</button>
 </div>
+<div id="job" class="card hidden" aria-live="polite">
+  <h2>AI mapping in progress</h2>
+  <div class="job-row">
+    <progress id="job-bar" max="1" value="0"></progress>
+    <strong id="job-count"></strong>
+    <span id="job-text"></span>
+    <span class="muted" id="job-time"></span>
+    <button class="btn small" id="job-cancel">Cancel</button>
+  </div>
+  <p class="muted">The model works through the columns one at a time, so this takes a while. The job keeps running on the server if you leave this page; come back to see it.</p>
+</div>
+<div id="preflight-panel" class="card hidden" aria-live="polite"></div>
 <div id="add-rule" class="card hidden">
   <h2>Add manual rule</h2>
   <form id="add-rule-form" class="grid form">

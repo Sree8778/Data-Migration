@@ -11,6 +11,20 @@
   App.num = (x) => (x === null || x === undefined ? "-" : Number(x).toLocaleString());
   App.pageData = (name) => Number((App.$("#page") || {}).dataset[name] || 0);
 
+  /* Inside the management console every page is a tab: links to other pages open a new tab and
+     changes made here ask the console to refresh its explorer. Stand-alone pages behave as before. */
+  App.embedded = window.parent !== window;
+  App.open = (url, title) => {
+    if (App.embedded) window.parent.postMessage({ type: "open-tab", url, title }, window.location.origin);
+    else window.location.href = url;
+  };
+  App.changed = () => { if (App.embedded) window.parent.postMessage({ type: "changed" }, window.location.origin); };
+  document.addEventListener("click", (e) => {
+    const a = App.embedded && e.target.closest && e.target.closest("a[href^='/ui/']");
+    if (!a || e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
+    e.preventDefault(); App.open(a.getAttribute("href"), (a.dataset.title || a.textContent).trim());
+  });
+
   App.user = () => localStorage.getItem(KEY_USER) || "";
   App.toast = (msg, isError) => {
     const t = App.$("#toast"); if (!t) return;
@@ -39,6 +53,7 @@
       err.status = res.status; err.code = data && data.code; err.detail = detail;
       throw err;
     }
+    if (method !== "GET") App.changed();
     return data;
   };
   App.run = async (fn) => {   // run an action, surface errors as a toast

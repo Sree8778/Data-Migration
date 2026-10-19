@@ -2,40 +2,76 @@
   "use strict";
   const { $, esc, api, run, badge, statusBadge, confBadge, pct } = App;
   const tableId = App.pageData("tableId");
-  let detail = null, filter = null;
+  let detail = null, filter = null, sets = [], preflight = null;
 
   // ---------------------------------------------------------------- mapping sets
   async function loadSets(selectId) {
-    const sets = (await run(() => api("GET", "/api/mapping-sets?source_table_id=" + tableId))) || [];
+    const archivedToo = $("#show-archived").checked ? "&include_archived=true" : "";
+    sets = (await run(() => api("GET", "/api/mapping-sets?source_table_id=" + tableId + archivedToo))) || [];
     const sel = $("#mapping-select");
     sel.innerHTML = sets.map((s) => '<option value="' + esc(s.mapping_set_id) + '">#' + esc(s.mapping_set_id) + " v" + esc(s.version) +
-      " - " + esc(s.status) + " (" + esc(s.rule_count) + " rules)</option>").join("") || '<option value="">no mapping sets</option>';
+      " - " + esc(s.status) + (s.archived ? " [archived]" : "") + " (" + esc(s.rule_count) + " rules)</option>").join("") ||
+      '<option value="">no mapping sets</option>';
     if (selectId) sel.value = String(selectId);
     if (sel.value) await loadDetail(Number(sel.value)); else { detail = null; render(); }
   }
 
   async function loadDetail(id) {
     detail = await run(() => api("GET", "/api/mapping/" + id));
+    preflight = await api("GET", "/api/mapping/" + id + "/preflight").catch(() => null);   // null until a check has been run
     filter = null; render();
+  }
+
+  // ---------------------------------------------------------------- the pre-submission check
+  // The stored report describes the rules as they were when it ran: if they were edited since, it is shown as out of date and not used per rule.
+  function preflightStale() {
+    if (!preflight || !detail) return true;
+    const now = detail.rules.map((r) => r.rule_id + ":" + r.rule_type + ":" + r.lookup_count).sort().join(",");
+    return preflight.rules.map((r) => r.rule_id + ":" + r.rule_type + ":" + r.lookup_count).sort().join(",") !== now;
+  }
+  const ruleCheck = (r) => (preflight && !preflightStale() ? preflight.rules.find((c) => c.rule_id === r.rule_id) : null);
+
+  function renderPreflight() {
+    const box = $("#preflight-panel");
+    if (!preflight || !detail || preflight.mapping_set_id !== detail.mapping.mapping_set_id) { box.classList.add("hidden"); return; }
+    const p = preflight, stale = preflightStale();
+    box.classList.remove("hidden");
+    box.innerHTML = "<h2>Pre-submission check</h2><p>" +
+      (p.can_submit ? badge("green", "can be submitted") : badge("red", "cannot be submitted: " + p.blockers + " problem(s) to fix")) +
+      (p.warnings ? " " + badge("amber", p.warnings + " warning(s)") : "") + (stale ? " " + badge("gray", "out of date: the rules changed after this check") : "") +
+      ' <span class="muted">' + (p.sampled
+        ? "dry run on " + esc(App.num(p.sample_rows)) + " of " + esc(App.num(p.source_rows)) + " rows (the same rows every time): " + esc(pct(p.valid_rate, 0)) + " pass every rule"
+        : "structure only, no sample could be run") + "; checked " + esc(new Date(p.checked_at).toLocaleString()) +
+      (p.models.length ? "; model " + esc(p.models.join(", ")) : "") + "</span></p>" +
+      (p.findings.length ? '<ul class="findings">' + p.findings.map((f) => "<li>" + badge(f.severity === "BLOCKER" ? "red" : "amber", f.severity) + " " + esc(f.message) + "</li>").join("") + "</ul>"
+        : '<p class="muted">Nothing to report.</p>');
   }
 
   // ---------------------------------------------------------------- rendering
   function render() {
     const draft = detail && detail.mapping.status === "DRAFT";
-    $("#mapping-status").innerHTML = detail ? statusBadge(detail.mapping.status) +
+    const opt = detail && $("#mapping-select").selectedOptions[0];   // keep the dropdown label in step with the loaded set
+    if (opt) opt.textContent = "#" + detail.mapping.mapping_set_id + " v" + detail.mapping.version + " - " + detail.mapping.status +
+      (detail.mapping.archived ? " [archived]" : "") + " (" + detail.rules.length + " rules)";
+    const archived = !!(detail && detail.mapping.archived);
+    $("#archive-mapping").textContent = archived ? "Restore" : "Archive";
+    $("#archive-mapping").disabled = !detail || detail.mapping.status === "SUBMITTED";
+    $("#mapping-status").innerHTML = detail ? statusBadge(detail.mapping.status) + (archived ? " " + badge("gray", "archived: " + detail.mapping.archive_reason) : "") +
       (detail.mapping.approved_by ? ' <span class="muted">by ' + esc(detail.mapping.approved_by) + "</span>" : "") : "";
     $("#submit-mapping").disabled = !(detail && draft);
     $("#approve-mapping").disabled = !(detail && detail.mapping.status === "SUBMITTED");
-    $("#run-pipeline").disabled = !(detail && detail.mapping.status !== "REJECTED");
+    $("#run-pipeline").disabled = !(detail && detail.mapping.status !== "REJECTED" && !archived);
+    $("#preflight").disabled = !detail;
     $("#add-rule-toggle").disabled = !draft;
-    renderLegacy(); renderRules();
+    $("#placeholders").disabled = !draft;
+    renderLegacy(); renderRules(); renderPreflight();
   }
 
   function renderLegacy() {
     if (!detail) { $("#legacy").innerHTML = '<p class="muted">No mapping set yet.</p>'; return; }
     $("#legacy").innerHTML = detail.source_columns.map((c) =>
       '<div class="legacy-col' + (filter === c.column_name ? " active" : "") + '" data-col="' + esc(c.column_name) + '" tabindex="0">' +
-      '<span class="name">' + esc(c.column_name) + "</span> " + (c.mapped ? badge("green", "mapped") : badge("gray", "unmapped")) +
+      '<span class="name">' + esc(c.column_name) + "</span> " + (c.missing_from_file ? badge("red", "not in the file") : "") + " " + (c.mapped ? badge("green", "mapped") : badge("gray", "unmapped")) +
       "<small>" + esc(c.data_type) + " | nulls " + esc(pct(c.null_ratio, 0)) + " | " + esc(c.sample_values.join(", ")) + "</small></div>").join("");
     document.querySelectorAll(".legacy-col").forEach((el) => {
       const toggle = () => { filter = filter === el.dataset.col ? null : el.dataset.col; renderLegacy(); renderRules(); };
@@ -56,24 +92,39 @@
     if (!detail) { box.innerHTML = '<p class="muted">Select or generate a mapping set.</p>'; $("#unmapped").innerHTML = ""; return; }
     const rules = detail.rules.filter((r) => !filter || r.source_column === filter);
     const editable = detail.mapping.status === "DRAFT";
-    box.innerHTML = rules.map((r) =>
+    const missing = new Set(detail.source_columns.filter((c) => c.missing_from_file).map((c) => c.column_name));
+    box.innerHTML = rules.map((r) => { const chk = ruleCheck(r); return (
       '<div class="rule" data-rule="' + esc(r.rule_id) + '"><div class="rule-head">' +
       "<div>" + (r.source_column ? "<strong>" + esc(r.source_column) + "</strong>" : '<span class="muted">(constant)</span>') + "</div>" +
       '<div class="arrow">&rarr;</div>' +
       "<div><strong>" + esc(r.target_table) + "." + esc(r.target_column) + "</strong>" + (r.target_mandatory ? ' <span title="mandatory">*</span>' : "") +
       '<div class="muted">' + esc(r.target_data_type) + (r.target_length ? "(" + esc(r.target_length) + ")" : "") + "</div></div>" +
-      "<div>" + confBadge(r.confidence) + " " + (r.ai_suggested ? badge("purple", "AI-suggested") : "") + " " + ruleStatus(r) +
-      (editable ? ' <button class="btn small edit">Edit</button>' : "") + "</div></div>" +
+      "<div>" + (r.confidence === null ? "" : confBadge(r.confidence) + " ") + (r.ai_suggested ? badge("purple", "AI-suggested") : "") + " " + ruleStatus(r) +
+      (missing.has(r.source_column) ? " " + badge("red", "source column not in the file") : "") +
+      (chk && chk.pass_rate !== null ? " " + badge(chk.verdict === "BLOCKER" ? "red" : chk.verdict === "WARNING" ? "amber" : "green",
+        "sample: " + pct(chk.pass_rate, chk.pass_rate === 1 || chk.pass_rate === 0 ? 0 : 1) + " pass") : "") +
+      (editable ? ' <button class="btn small edit">Edit</button> <button class="btn small delete">Delete</button>' : "") + "</div></div>" +
       '<div class="rule-meta"><span class="badge gray">' + esc(r.rule_type) + "</span>" +
       (r.transformation_logic ? ' <code>' + esc(r.transformation_logic) + "</code>" : "") +
       (r.rule_type === "VALUE_MAPPING" ? " " + esc(r.lookup_count) + " lookup values" : "") +
       (r.reasoning ? "<div>" + esc(r.reasoning) + "</div>" : "") +
       (r.review_reasons.length ? "<div>" + r.review_reasons.map((x) => badge("amber", x)).join(" ") + "</div>" : "") +
-      "</div><div class=\"rule-edit hidden\"></div></div>").join("") || '<p class="muted">No rules' + (filter ? " for this column" : "") + ".</p>";
+      (chk && chk.unmatched_values.length ? "<div>No lookup entry for: " + chk.unmatched_values.map((u) => "<code>" + esc(u.value) + "</code> (" + esc(App.num(u.count)) + ")").join(", ") + "</div>" : "") +
+      (r.ai_suggested && r.ai_model_name ? '<div class="muted">model ' + esc(r.ai_model_name) + "</div>" : "") +
+      "</div><div class=\"rule-edit hidden\"></div></div>"); }).join("") || '<p class="muted">No rules' + (filter ? " for this column" : "") + ".</p>";
 
     box.querySelectorAll(".rule").forEach((el) => {
       const btn = el.querySelector(".edit");
       if (btn) btn.addEventListener("click", () => toggleEditor(el, detail.rules.find((x) => x.rule_id === Number(el.dataset.rule))));
+      const del = el.querySelector(".delete");
+      if (del) del.addEventListener("click", () => {
+        const rule = detail.rules.find((x) => x.rule_id === Number(el.dataset.rule));
+        if (!window.confirm("Delete the rule for " + rule.target_table + "." + rule.target_column + "? This is recorded in the audit log.")) return;
+        run(async () => {
+          await api("DELETE", "/api/mapping/rules/" + rule.rule_id);
+          App.toast("Rule deleted"); await loadDetail(detail.mapping.mapping_set_id);
+        });
+      });
     });
     $("#unmapped").innerHTML = detail.unmapped_mandatory_targets.length
       ? '<h2>Mandatory SAP fields without a rule</h2>' + detail.unmapped_mandatory_targets.map((t) => badge("red", t)).join(" ") : "";
@@ -111,15 +162,83 @@
 
   // ---------------------------------------------------------------- actions
   $("#mapping-select").addEventListener("change", (e) => { if (e.target.value) loadDetail(Number(e.target.value)); });
+  $("#show-archived").addEventListener("change", () => loadSets(detail && detail.mapping.mapping_set_id));
+  $("#archive-mapping").addEventListener("click", () => run(async () => {
+    const id = detail.mapping.mapping_set_id;
+    if (detail.mapping.archived) {
+      await api("POST", "/api/mapping/" + id + "/unarchive"); App.toast("Mapping set #" + id + " restored"); await loadSets(id); return;
+    }
+    const reason = window.prompt("Why is mapping set #" + id + " obsolete? (kept in the record; it can be restored)");
+    if (!reason || reason.trim().length < 3) return;
+    await api("POST", "/api/mapping/" + id + "/archive", { reason: reason.trim() });
+    App.toast("Mapping set #" + id + " archived"); await loadSets();
+  }));
+
+  // ---------------------------------------------------------------- background AI-mapping job
+  let pollTimer = null, currentJob = null;
+  const ACTIVE = ["queued", "running", "cancelling"];
+  const fmtElapsed = (job) => {
+    const end = job.finished_at ? new Date(job.finished_at) : new Date();
+    const sec = Math.max(0, Math.round((end - new Date(job.created_at)) / 1000));
+    return Math.floor(sec / 60) + "m " + String(sec % 60).padStart(2, "0") + "s";
+  };
+
+  function showJob(job) {
+    const active = ACTIVE.includes(job.status);
+    $("#job").classList.toggle("hidden", !active);
+    $("#generate").disabled = active;
+    if (!active) return;
+    const p = job.progress;
+    $("#job-bar").max = Math.max(p.total, 1); $("#job-bar").value = p.current;
+    $("#job-count").textContent = p.total ? p.current + " / " + p.total + " done" : "";
+    $("#job-text").innerHTML = '<span class="spinner"></span> ' + esc(p.message);
+    $("#job-time").textContent = "elapsed " + fmtElapsed(job);
+    $("#job-cancel").disabled = job.status === "cancelling";
+  }
+
+  async function poll(jobId) {
+    clearTimeout(pollTimer);
+    let job;
+    try { job = await api("GET", "/api/mapping/jobs/" + jobId); }
+    catch (e) { $("#job").classList.add("hidden"); $("#generate").disabled = false; App.toast(e.message, true); return; }
+    showJob(job);
+    if (ACTIVE.includes(job.status)) { pollTimer = setTimeout(() => poll(jobId), 1500); return; }
+    $("#generate").disabled = false;
+    if (job.status === "succeeded") {
+      const saved = job.result.report.proposals.filter((x) => x.outcome === "SAVED").length;
+      App.toast("Draft mapping #" + job.result.mapping_set_id + ": " + saved + " rules proposed (" + fmtElapsed(job) + ")");
+      await loadSets(job.result.mapping_set_id);
+    } else if (job.status === "cancelled") App.toast("AI mapping cancelled; nothing was saved");
+    else App.toast("AI mapping failed: " + (job.error ? job.error.code + " - " + job.error.detail : job.progress.message), true);
+  }
 
   $("#generate").addEventListener("click", () => run(async () => {
-    $("#generate").disabled = true; App.toast("Generating suggestions - one LLM call per column...");
-    try {
-      const r = await api("POST", "/api/mapping/generate/" + tableId);
-      const saved = r.report.proposals.filter((p) => p.outcome === "SAVED").length;
-      App.toast("Draft mapping #" + r.mapping_set_id + ": " + saved + " rules proposed");
-      await loadSets(r.mapping_set_id);
-    } finally { $("#generate").disabled = false; }
+    $("#generate").disabled = true;
+    const runs = $("#consistency").value;
+    const job = await api("POST", "/api/mapping/generate/" + tableId + "?background=true" + (runs ? "&consistency_runs=" + encodeURIComponent(runs) : ""));
+    App.toast(job.already_running ? "An AI mapping job is already running; following it" : "AI mapping started");
+    currentJob = job.job_id; showJob(job); poll(job.job_id);
+  }));
+  $("#job-cancel").addEventListener("click", () => run(async () => {
+    if (currentJob) showJob(await api("POST", "/api/mapping/jobs/" + currentJob + "/cancel"));
+  }));
+
+  // resume following a job that is still running (e.g. after a page reload)
+  (async () => {
+    const jobs = (await run(() => api("GET", "/api/mapping/jobs?source_table_id=" + tableId))) || [];
+    const active = jobs.find((j) => ACTIVE.includes(j.status));
+    if (active) { currentJob = active.job_id; showJob(active); poll(active.job_id); }
+  })();
+
+  $("#new-set").addEventListener("click", () => run(async () => {
+    const created = await api("POST", "/api/mapping-sets", { source_table_id: tableId });
+    App.toast("Empty draft mapping set #" + created.mapping_set_id + " created - add rules below");
+    await loadSets(created.mapping_set_id);
+  }));
+  $("#placeholders").addEventListener("click", () => run(async () => {
+    const added = await api("POST", "/api/construction/placeholder-rules/" + detail.mapping.mapping_set_id);
+    App.toast(added.length ? added.length + " placeholder rule(s) added: " + added.map((a) => a.target).join(", ") : "No mandatory field is missing a rule");
+    await loadDetail(detail.mapping.mapping_set_id);
   }));
 
   $("#add-rule-toggle").addEventListener("click", () => $("#add-rule").classList.toggle("hidden"));
@@ -137,14 +256,36 @@
     await api("POST", "/api/governance/" + action + "/" + detail.mapping.mapping_set_id);
     App.toast(msg); await loadSets(detail.mapping.mapping_set_id);
   });
-  $("#submit-mapping").addEventListener("click", () => govern("submit-mapping", "Submitted for approval"));
+  $("#submit-mapping").addEventListener("click", () => run(async () => {
+    try {
+      await api("POST", "/api/governance/submit-mapping/" + detail.mapping.mapping_set_id);
+    } catch (e) {
+      if (e.code === "PREFLIGHT_BLOCKED" && e.detail && e.detail.report) {   // show what has to be fixed, right here
+        preflight = e.detail.report; renderPreflight(); renderRules();
+        $("#preflight-panel").scrollIntoView({ block: "nearest" });
+        App.toast("Not submitted: " + e.detail.report.blockers + " problem(s) found by the check on a sample of your data. See the report above the rules.", true);
+        return;
+      }
+      throw e;
+    }
+    App.toast("Submitted for approval"); await loadSets(detail.mapping.mapping_set_id);
+  }));
+  $("#preflight").addEventListener("click", () => run(async () => {
+    const id = detail.mapping.mapping_set_id;
+    $("#preflight").disabled = true; App.toast("Running the rules on a sample of the data...");
+    try {
+      preflight = await api("POST", "/api/mapping/" + id + "/preflight");
+    } finally { $("#preflight").disabled = !detail; }
+    renderPreflight(); renderRules();
+    App.toast(preflight.can_submit ? "Check passed" + (preflight.warnings ? " with " + preflight.warnings + " warning(s)" : "") : "Check found " + preflight.blockers + " problem(s) to fix", !preflight.can_submit);
+  }));
   $("#approve-mapping").addEventListener("click", () => govern("approve-mapping", "Mapping set approved"));
 
   $("#run-pipeline").addEventListener("click", () => run(async () => {
     $("#run-pipeline").disabled = true; App.toast("Running transform, deduplication and validation...");
     try {
       const r = await api("POST", "/api/pipeline/run/" + detail.mapping.mapping_set_id, {});
-      window.location.href = "/ui/governance/" + r.run_id;
+      App.open("/ui/governance/" + r.run_id, "Governance");
     } finally { $("#run-pipeline").disabled = false; }
   }));
 

@@ -54,6 +54,7 @@ class SourceColumnContext(BaseModel):
     null_ratio: Optional[float] = None
     distinct_ratio: Optional[float] = None
     sample_values: list[str] = Field(default_factory=list)  # already masked, max 3
+    evidence_values: list[str] = Field(default_factory=list)  # the profile's sample values (masked like the others); checked against SAP domains, never sent to the model
     table_name: str = ""
 
 
@@ -90,6 +91,9 @@ class ColumnProposal(BaseModel):
     reasons: list[str] = Field(default_factory=list)
     candidates: list[str] = Field(default_factory=list)  # "TABLE.COLUMN" retrieved
     field_rule_id: Optional[int] = None
+    runs: int = 1  # how many times the model was asked about this column
+    agreement: float = 1.0  # share of those runs that gave the answer that was kept (1.0 = unanimous)
+    alternatives: list[str] = Field(default_factory=list)  # the answers that lost the vote, "n x TABLE.COLUMN (RULE_TYPE)"
 
 
 class MappingGenerationReport(BaseModel):
@@ -99,6 +103,8 @@ class MappingGenerationReport(BaseModel):
     target_table_id: int
     version: int
     model_name: str
+    model_pinned: bool = True  # False when the model is an alias such as "...-latest" that its vendor can repoint
+    consistency_runs: int = 1
     proposals: list[ColumnProposal]
     skipped_unprofiled_columns: list[str] = Field(default_factory=list)
     unmapped_mandatory_targets: list[str] = Field(default_factory=list)
