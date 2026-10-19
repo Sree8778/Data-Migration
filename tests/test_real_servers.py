@@ -437,3 +437,31 @@ def test_sql_server_reads_one_consistent_snapshot_when_the_database_allows_it(se
         w.close()
     assert iso == 5 and first == again == 4                                                                      # 5 = SNAPSHOT: the count and the extract see the same table
     admin.close()
+
+
+def test_awkward_values_survive_every_real_database_and_a_later_edit_is_detected(server):
+    """Emoji, accents, combining marks, edge whitespace, line breaks, backslashes and wildcards, blanks: the value check must pass on the real
+    products (their character sets, padding and empty-string rules differ), and a later edit of one value must be found by the comparison."""
+    from src.connectors.fingerprint import Fingerprint
+    w = connector_for(server.spec("rw"))
+    cols = [ColumnDef("LEGACY_KEY", "text", 255, False), ColumnDef("MIG_RUN_ID", "int", nullable=False), ColumnDef("NAME", "text", 40), ColumnDef("NOTE", "text", 60)]
+    data = [("k1", 1, "Emoji \U0001F600 B\u00e4r", "trailing  "), ("k2", 1, "  leading", "tab\there"), ("k3", 1, "line1\nline2", "C:\dir\file 100% a_b"),
+            ("k4", 1, "", "\u00dcn\u00efc\u00f6d\u00e9 \ufb01 \u00df NBSP\u00a0x"), ("k5", 1, None, "e\u0301 (e plus a combining accent)"), ("k6", 1, "x" * 40, "O'Brien \"quoted\"")]
+    out = w.load_table(server.tgt_schema, "MIG_VAL_T", cols, ["LEGACY_KEY"], iter(data), mode="create", expected_rows=len(data))
+    assert out.values_verified and out.cells_compared == len(data) * len(cols) and len(out.value_digest) == 16
+    table = w.natural_case("MIG_VAL_T")
+    names = [w.natural_case(c.name) for c in cols]
+    expected = Fingerprint(names, [0])
+    for row in data:
+        expected.add(row)
+    held = w.fingerprint_table(server.tgt_schema, table, names, [names[0]])
+    assert held.rows == len(data) and expected.differing_columns(held) == [] and held.digest == out.value_digest   # the same fingerprint at delivery and later
+
+    q = w.quote                                                          # someone edits one value in the target afterwards
+    with w.session(read_only=False) as conn:
+        cur = conn.cursor()
+        cur.execute(f"UPDATE {q(server.tgt_schema)}.{q(table)} SET {q(names[3])} = {w._placeholder(1)} WHERE {q(names[0])} = {w._placeholder(2)}", ("changed by hand", "k2"))
+        cur.close()
+        conn.commit()
+    assert expected.differing_columns(w.fingerprint_table(server.tgt_schema, table, names, [names[0]])) == [names[3]]
+    w.load_table(server.tgt_schema, "MIG_VAL_T", cols, ["LEGACY_KEY"], iter(data[:1]), mode="replace")   # leave a clean state for the next run

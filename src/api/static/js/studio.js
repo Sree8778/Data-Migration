@@ -2,7 +2,7 @@
   "use strict";
   const { $, esc, api, run, badge, statusBadge, confBadge, pct } = App;
   const tableId = App.pageData("tableId");
-  let detail = null, filter = null, sets = [], preflight = null;
+  let detail = null, filter = null, sets = [], preflight = null, exclusions = null;
 
   // ---------------------------------------------------------------- mapping sets
   async function loadSets(selectId) {
@@ -20,12 +20,89 @@
     detail = await run(() => api("GET", "/api/mapping/" + id));
     preflight = await api("GET", "/api/mapping/" + id + "/preflight").catch(() => null);   // null until a check has been run
     filter = null; render();
+    loadExclusions();
   }
+
+  // ---------------------------------------------------------------- rows to leave out
+  async function loadExclusions() {
+    if (!detail) { exclusions = null; renderExclusions([]); return; }
+    const id = detail.mapping.mapping_set_id;
+    exclusions = await api("GET", "/api/mapping/" + id + "/exclusions").catch(() => null);
+    const suggestions = exclusions && exclusions.editable ? await api("GET", "/api/mapping/" + id + "/exclusions/suggestions").catch(() => []) : [];
+    renderExclusions(suggestions || []);
+    renderPreflight(); renderRules();   // the stored check is only 'current' once the exclusion rules are known
+  }
+
+  const OPS = { equals: "equals", in: "is one of", is_blank: "is blank", starts_with: "starts with", contains: "contains", regex: "matches" };
+  const ruleText = (r) => esc(r.column) + " " + esc(OPS[r.operator] || r.operator) + (r.values.length ? " <code>" + esc(r.values.join(", ")) + "</code>" : "");
+
+  function renderExclusions(suggestions) {
+    const box = $("#excl-rules"), form = $("#excl-form");
+    if (!exclusions) { box.innerHTML = ""; $("#excl-suggest").innerHTML = ""; $("#excl-summary").textContent = ""; form.classList.add("hidden"); return; }
+    const s = exclusions.summary, n = exclusions.rules.length;
+    const hint = suggestions.length ? " (the data suggests " + suggestions.length + ")" : "";
+    $("#excl-summary").textContent = n ? "- " + n + " rule(s)" + (s ? ", " + App.num(s.excluded_rows) + " of " + App.num(s.total_rows) + " rows left out" : "") + hint : "- none" + hint;
+    $("#exclusions").open = n > 0 || suggestions.length > 0 || $("#exclusions").open;
+    const counts = new Map((s ? s.rules : []).map((c) => [c.rule_id, c]));
+    box.innerHTML = n ? exclusions.rules.map((r) => { const c = counts.get(r.rule_id);
+      return '<div class="rule" data-excl="' + esc(r.rule_id) + '"><div class="rule-head"><div>' + ruleText(r) + "</div><div></div><div>" +
+        (c ? badge(c.excluded ? "amber" : "gray", App.num(c.excluded) + " row(s)") : "") +
+        (exclusions.editable ? ' <button class="btn small excl-delete">Delete</button>' : "") + "</div></div>" +
+        '<div class="rule-meta">' + esc(r.reason) + ' <span class="muted">(by ' + esc(r.created_by) + (c && c.examples.length ? "; e.g. " + esc(c.examples.join(", ")) : "") + ")</span></div></div>"; }).join("")
+      : '<p class="muted">No rows are left out: everything in the file is migrated.</p>';
+    box.querySelectorAll(".excl-delete").forEach((btn) => btn.addEventListener("click", () => run(async () => {
+      const id = Number(btn.closest("[data-excl]").dataset.excl);
+      if (!window.confirm("Stop leaving these rows out? The rule is removed and the change is recorded in the audit log.")) return;
+      await api("DELETE", "/api/mapping/" + detail.mapping.mapping_set_id + "/exclusions/" + id);
+      App.toast("Rule removed"); await loadExclusions(); renderPreflight(); renderRules();
+    })));
+    form.classList.toggle("hidden", !exclusions.editable);
+    const chosen = $("#excl-column").value;   // reloading the rules must not throw away what the person has already picked
+    $("#excl-column").innerHTML = detail.source_columns.filter((c) => !c.missing_from_file)
+      .map((c) => "<option>" + esc(c.column_name) + "</option>").join("");
+    if (chosen) $("#excl-column").value = chosen;
+    $("#excl-suggest").innerHTML = exclusions.editable && suggestions.length
+      ? '<p><strong>Suggested by the data</strong> (nothing is applied until you accept):</p>' + suggestions.map((x, i) =>
+        '<div class="rule"><div class="rule-head"><div>' + ruleText(x) + "</div><div></div><div>" + badge("amber", App.num(x.matches) + " row(s)") +
+        ' <button class="btn small excl-use" data-i="' + i + '">Use this</button></div></div><div class="rule-meta">' + esc(x.reason) +
+        (x.examples.length ? ' <span class="muted">e.g. ' + esc(x.examples.join(", ")) + "</span>" : "") + "</div></div>").join("") : "";
+    $("#excl-suggest").querySelectorAll(".excl-use").forEach((btn) => btn.addEventListener("click", () => {
+      const x = suggestions[Number(btn.dataset.i)];
+      $("#excl-column").value = x.column; $("#excl-operator").value = x.operator; $("#excl-value").value = x.values.join(", ");
+      $("#excl-reason").value = x.reason; syncOperator(); checkExclusion(); $("#excl-reason").focus();
+    }));
+    syncOperator();
+  }
+
+  const syncOperator = () => { $("#excl-value").disabled = $("#excl-operator").value === "is_blank"; };
+  function exclusionBody() {
+    const op = $("#excl-operator").value, raw = $("#excl-value").value;
+    const values = op === "is_blank" ? [] : op === "in" ? raw.split(",").map((v) => v.trim()).filter(Boolean) : [raw.trim()];
+    return { column: $("#excl-column").value, operator: op, values, reason: $("#excl-reason").value.trim() || "(reason pending)" };
+  }
+  async function checkExclusion() {
+    $("#excl-preview").textContent = "checking...";
+    try {
+      const c = await api("POST", "/api/mapping/" + detail.mapping.mapping_set_id + "/exclusions/preview", exclusionBody());
+      $("#excl-preview").textContent = App.num(c.excluded) + " row(s) match" + (c.examples.length ? ", for example " + c.examples.join(", ") : "");
+    } catch (e) { $("#excl-preview").textContent = e.message; }
+  }
+  $("#excl-operator").addEventListener("change", syncOperator);
+  $("#excl-check").addEventListener("click", checkExclusion);
+  $("#excl-form").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    run(async () => {
+      const c = await api("POST", "/api/mapping/" + detail.mapping.mapping_set_id + "/exclusions", exclusionBody());
+      App.toast(App.num(c.excluded) + " row(s) will be left out"); ev.target.reset(); $("#excl-preview").textContent = "";
+      await loadExclusions(); renderPreflight(); renderRules();
+    });
+  });
 
   // ---------------------------------------------------------------- the pre-submission check
   // The stored report describes the rules as they were when it ran: if they were edited since, it is shown as out of date and not used per rule.
   function preflightStale() {
     if (!preflight || !detail) return true;
+    if ((preflight.exclusion_rules || []).join(",") !== (exclusions ? exclusions.rules.map((r) => r.rule_id) : []).join(",")) return true;
     const now = detail.rules.map((r) => r.rule_id + ":" + r.rule_type + ":" + r.lookup_count).sort().join(",");
     return preflight.rules.map((r) => r.rule_id + ":" + r.rule_type + ":" + r.lookup_count).sort().join(",") !== now;
   }

@@ -16,6 +16,7 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
+import httpx
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.api.exceptions import NotConfiguredError
@@ -23,6 +24,7 @@ from src.services._duckdb_util import bounded_connection, lit
 from src.api.archive import MappingArchive
 from src.connectors.store import ConnectionStore
 from src.services.db_loader_service import DbLoaderService
+from src.services.delta_service import DeltaService
 from src.api.jobs import JobManager
 from src.api.settings import Settings
 from src.schemas.validation import ValidationReport
@@ -39,6 +41,7 @@ from src.services.lookup_service import LookupService
 from src.services.mapping_preflight import MappingPreflightService
 from src.services.mapping_orchestrator import MappingOrchestrator
 from src.services.metadata_service import MetadataService
+from src.services.row_exclusion import ExclusionStore
 from src.services.profiler_service import ProfilerService
 from src.services.reconciliation_service import ReconciliationService
 from src.services.source_landing import SourceLandingService
@@ -60,7 +63,9 @@ class AppContext:
         jira: Optional[JiraService] = None,
         live_sap_client: Optional[Callable[[], SapClient]] = None,
         gemini_keys: Optional[GeminiKeyManager] = None,
+        sap_transport: Optional[httpx.BaseTransport] = None,
     ) -> None:
+        self._sap_transport = sap_transport  # tests only: a stand-in for the SAP gateway
         self.settings = settings
         self.session_factory = session_factory
         sf = session_factory
@@ -78,8 +83,10 @@ class AppContext:
         self.reconciliation = ReconciliationService(sf)
         self.landing = SourceLandingService()
         self.archive = MappingArchive(self.workspace)
+        self.exclusions = ExclusionStore(self.workspace)
         self.connections = ConnectionStore(self.workspace, allowed_hosts=settings.db_allowed_hosts)
         self.db_loader = DbLoaderService(sf)
+        self.delta = DeltaService(self.db_loader)
         self.construction = ConstructionService(sf, self.workspace / "runs", self.validation, self.defects, self.governance)
         self._llm = llm_mapper
         self.gemini_keys = gemini_keys or GeminiKeyManager.from_env(persist_path=settings.gemini_keys_file)
@@ -111,7 +118,7 @@ class AppContext:
             config = SapConfig.from_env()
             if config is None:
                 raise NotConfiguredError("live SAP target requested but SAP_BASE_URL / SAP_USER / SAP_PASSWORD are not set")
-            return HttpSapClient(config), False
+            return HttpSapClient(config, transport=self._sap_transport), False
         with self._lock:
             return SandboxSapClient(first_partner=self._sandbox_next), True
 

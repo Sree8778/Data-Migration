@@ -85,6 +85,7 @@ class LoadResult(_Model):
 # ------------------------------------------------------------------ reconciliation
 class ReconCounts(_Model):
     extracted: int
+    excluded: int = 0  # left out on purpose by the mapping set's exclusion rules
     transformed_ok: int
     transform_failed: int
     duplicate_children: Optional[int] = None

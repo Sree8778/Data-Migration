@@ -229,6 +229,10 @@ class FakeCur:
             return
         if "COUNT(*)" in sql:
             self._rows = [(self.conn.count if self.conn.count is not None else len(self.conn.inserted),)]
+        elif sql.startswith("SELECT ") and "MIG_T" in sql:          # the value check reads every stored value back
+            stored = list(self.conn.inserted)
+            self._rows = self.conn.readback(stored) if self.conn.readback else stored
+            self.description = [(f"c{i}",) for i in range(len(stored[0]) if stored else 3)]
         elif "all_tables" in sql or "sys.tables" in sql or "information_schema.tables" in sql:
             self._rows = [(t, "TABLE", 0) for t in self.conn.tables]
         elif "all_users" in sql or "sys.schemas" in sql or "schema_name" in sql:
@@ -248,13 +252,18 @@ class FakeCur:
         out, self._rows = self._rows, []
         return out
 
+    def fetchmany(self, n=1):
+        out, self._rows = self._rows[:n], self._rows[n:]
+        return out
+
     def close(self):
         pass
 
 
 class FakeTargetConn:
-    def __init__(self, schemas=("APP",), tables=(), count=None, fail_inserts=False, fail_on=None):
+    def __init__(self, schemas=("APP",), tables=(), count=None, fail_inserts=False, fail_on=None, readback=None):
         self.schemas, self.tables, self.count, self.fail_inserts, self.fail_on = list(schemas), list(tables), count, fail_inserts, fail_on
+        self.readback = readback                                    # a function that changes what the database hands back (to simulate altered values)
         self.executed, self.inserted, self.commits, self.rollbacks, self.closed = [], [], 0, 0, False
 
     def cursor(self, *a, **k):
@@ -292,6 +301,22 @@ def test_other_dialects_generate_native_ddl_and_load_all_or_nothing(cls, schema,
         assert piece in out.ddl, (piece, out.ddl)
     assert any(placeholder in s and "INSERT INTO" in s for s in conn.executed)
     assert conn.inserted[0] == ("1001", 7, "Müller GmbH") and conn.inserted[1][2] is None
+    assert out.values_verified and out.cells_compared == 2 * len(COLS) and len(out.value_digest) == 16   # every stored value was read back and compared
+
+
+@pytest.mark.parametrize("cls,schema", [(OracleConnector, "APP"), (MysqlConnector, "app"), (MssqlConnector, "dbo")])
+def test_values_the_database_changed_are_refused_on_every_dialect(cls, schema):
+    def umlaut_lost(rows):                                            # the same two rows come back, one name altered (utf8 stored as latin1, say)
+        return [(k, r, (n.replace("ü", "?") if n else n)) for k, r, n in rows]
+    conn = FakeTargetConn(schemas=(schema,), readback=umlaut_lost)
+    c = connector(cls, conn)
+    with pytest.raises(ConnectorError, match=r"value check failed.*BUT000_NAME_ORG1.*nothing was kept"):
+        c.load_table(schema, "MIG_T", COLS, ["LEGACY_KEY"], iter(ROWS), expected_rows=2)
+    assert conn.rollbacks >= 1 and (conn.commits == 0 if c.transactional_ddl else conn.commits == 1)      # the only commit is the cleanup DROP where DDL cannot be rolled back
+    assert any(x.startswith("DROP TABLE") for x in conn.executed) == (not c.transactional_ddl)
+    off = FakeTargetConn(schemas=(schema,), readback=umlaut_lost)       # with the check off nothing is read back, so the same damage goes unnoticed
+    out = connector(cls, off).load_table(schema, "MIG_T", COLS, ["LEGACY_KEY"], iter(ROWS), verify_values=False)
+    assert out.values_verified is False and out.cells_compared == 0 and off.commits == 1
 
 
 @pytest.mark.parametrize("cls,schema", [(OracleConnector, "APP"), (MysqlConnector, "app"), (MssqlConnector, "dbo")])

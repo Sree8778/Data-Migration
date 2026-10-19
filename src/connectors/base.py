@@ -36,6 +36,9 @@ DEFAULT_CONNECT_TIMEOUT = 10
 SAFE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,29}$")   # names we create: letters, digits, underscore; 30 chars is Oracle's old limit
 
 
+from src.connectors.fingerprint import Fingerprint  # noqa: E402
+
+
 class ConnectorError(Exception):
     """The database could not be reached, browsed or read (message is safe to show to users)."""
 
@@ -92,6 +95,40 @@ class LoadOutcome:
     rows_inserted: int
     rows_in_target: int                 # SELECT COUNT(*) on the new table, in the same transaction, before it was committed
     replaced_existing: bool
+    seconds: float
+    values_verified: bool = False       # every cell read back from the new table equals what was sent (checked before the commit)
+    cells_compared: int = 0
+    value_digest: str = ""              # fingerprint of the table's content, for the record and the certificate
+
+
+@dataclass
+class RollbackOutcome:
+    removed: int                        # rows of the run that were deleted
+    remaining: int                      # rows left in the table (other runs' rows)
+    table_dropped: bool                 # the table held nothing but this run, so it was removed too
+    seconds: float
+
+
+@dataclass
+class MergeOutcome:
+    inserted: int                       # records that were not in the table yet
+    updated: int                        # records that were replaced (their old version went to the before-image)
+    deleted: int                        # records removed on request (also kept in the before-image)
+    rows_before: int
+    rows_after: int                     # COUNT(*) before the commit; equals rows_before + inserted - deleted
+    before_rows: int                    # rows handed to the before-image sink
+    seconds: float
+    values_verified: bool = False
+    cells_compared: int = 0
+    value_digest: str = ""
+
+
+@dataclass
+class MergeRollbackOutcome:
+    removed: int                        # rows of the run that were deleted again
+    restored: int                       # before-image rows put back
+    rows_before: int
+    rows_after: int
     seconds: float
 
 
@@ -430,12 +467,16 @@ class Connector(ABC):
 
     def load_table(self, schema: str, table: str, cols: list[ColumnDef], primary_key: list[str], rows: Iterable[Sequence[Any]],
                    mode: str = "create", batch_size: int = 1000, expected_rows: Optional[int] = None,
-                   progress: Optional[Callable[[int], None]] = None) -> LoadOutcome:
+                   progress: Optional[Callable[[int], None]] = None, verify_values: bool = True) -> LoadOutcome:
         """Create `schema.table` and fill it, all-or-nothing. `create` refuses an existing table; `replace` swaps it for the new one.
         The row count of the new table is read back inside the same transaction and must equal the rows sent (and `expected_rows`),
         otherwise nothing is kept. Where the product can roll DDL back (PostgreSQL, SQL Server) a replace is one transaction. Where it
         cannot (Oracle, MySQL) the new table is built under a temporary name and verified FIRST; only then is the old table dropped and
-        the new one renamed into place, so a failed replace never costs the table that was already there."""
+        the new one renamed into place, so a failed replace never costs the table that was already there.
+
+        `verify_values` (default on): before the commit every value is read back from the new table and fingerprinted against what was sent,
+        so a delivery that arrives with the right number of rows but altered values (a character set that cannot hold an umlaut, a value cut
+        short) is refused and rolled back, naming the columns that differ."""
         if mode not in ("create", "replace"):
             raise ConnectorError("mode must be 'create' or 'replace'")
         table = self.check_new_name(table)
@@ -448,6 +489,7 @@ class Connector(ABC):
         primary_key = [self.natural_case(k) for k in primary_key]
         started = time.monotonic()
         ddl = self.create_table_sql(schema, table, cols, primary_key)
+        sent_fp = Fingerprint([c.name for c in cols], [i for i, c in enumerate(cols) if c.name in primary_key] or [0])
         with self.session(read_only=False) as conn:
             self._check_schema(conn, schema)
             existing = {str(r[0]) for r in self._query(conn, *self._tables_sql(schema))}
@@ -473,6 +515,7 @@ class Connector(ABC):
                     batch: list[tuple] = []
                     for row in rows:
                         batch.append(tuple(row))
+                        sent_fp.add(batch[-1])
                         if len(batch) >= batch_size:
                             self._insert_many(cur, insert, batch)
                             sent += len(batch)
@@ -488,18 +531,275 @@ class Connector(ABC):
                 if in_target != sent or (expected_rows is not None and sent != expected_rows):
                     raise ConnectorError(f"row count check failed: {sent} row(s) were sent, the table holds {in_target}"
                                          + (f", {expected_rows} were expected" if expected_rows is not None else "") + "; nothing was kept")
+                if verify_values:
+                    held = self._fingerprint(conn, schema, work, cols, primary_key)
+                    wrong = sent_fp.differing_columns(held)
+                    if wrong:
+                        raise ConnectorError(
+                            f"value check failed: the database holds different values than were sent in column(s) {', '.join(wrong)}"
+                            f" ({held.rows} row(s) read back); a character set or column type that cannot hold the data is the usual cause; nothing was kept")
                 conn.commit()
                 if swap:                                                         # the new table is complete and verified: now swap it in
                     self._drop(conn, schema, table)
                     self._exec(conn, self._rename_sql(schema, work, table))
                     conn.commit()
-                return LoadOutcome(ddl=ddl, rows_inserted=sent, rows_in_target=in_target, replaced_existing=replaced, seconds=time.monotonic() - started)
+                return LoadOutcome(ddl=ddl, rows_inserted=sent, rows_in_target=in_target, replaced_existing=replaced, seconds=time.monotonic() - started,
+                                   values_verified=verify_values, cells_compared=sent_fp.cells if verify_values else 0,
+                                   value_digest=sent_fp.digest if verify_values else "")
             except ConnectorError:
                 self._undo(conn, schema, work, created)
                 raise
             except Exception as exc:  # noqa: BLE001 - driver errors mid-load
                 self._undo(conn, schema, work, created)
                 raise ConnectorError(f"the load failed and was rolled back: {self._scrub(exc)}") from None
+
+    def _fingerprint(self, conn: Any, schema: str, table: str, cols: Sequence[Any], key_columns: Sequence[str]) -> Fingerprint:
+        """Read every value of `cols` from the table over `conn` and fingerprint it (names are the database's own spelling)."""
+        names = [c.name for c in cols]
+        _, stream = self._open_stream(conn, f"SELECT {', '.join(self.quote(n) for n in names)} FROM {self.quote(schema)}.{self.quote(table)}")
+        fp = Fingerprint(names, [i for i, n in enumerate(names) if n in key_columns] or [0])
+        try:
+            for row in stream:
+                fp.add(row)
+        except ConnectorError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a dropped connection while reading back
+            raise ConnectorError(f"the values could not be read back: {self._scrub(exc)}") from None
+        return fp
+
+    def fingerprint_table(self, schema: str, table: str, columns: list[str], key_columns: list[str]) -> Fingerprint:
+        """The content fingerprint of an existing table (read-only), to compare with what was delivered into it."""
+        return self._retrying(lambda: self._fingerprint_once(schema, table, columns, key_columns))
+
+    def _fingerprint_once(self, schema: str, table: str, columns: list[str], key_columns: list[str]) -> Fingerprint:
+        with self.session() as conn:
+            meta = self._check_target(conn, schema, table, columns)
+            return self._fingerprint(conn, schema, table, meta, key_columns)
+
+    # ------------------------------------------------------------------ merge (delta) deliveries
+    def _in_list(self, n: int, start: int = 1) -> str:
+        return ", ".join(self._placeholder(start + i) for i in range(n))
+
+    def _fetch_by_keys(self, conn: Any, full: str, names: list[str], key: str, keys: Sequence[Any]) -> list[tuple]:
+        """The rows of the table whose key is in `keys` (a bound IN list), in the column order of `names`."""
+        sql = f"SELECT {', '.join(self.quote(n) for n in names)} FROM {full} WHERE {self.quote(key)} IN ({self._in_list(len(keys))})"
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, tuple(keys))
+            return [tuple(r) for r in cur.fetchall()]
+        finally:
+            cur.close()
+
+    def _insert_chunk(self, conn: Any, insert_sql: str, chunk: list[tuple]) -> None:
+        """Insert with a cursor of its own: some drivers (pytds) invalidate an older cursor when another statement runs on the connection."""
+        cur = conn.cursor()
+        try:
+            self._insert_many(cur, insert_sql, chunk)
+        finally:
+            cur.close()
+
+    def _delete_by_keys(self, conn: Any, full: str, key: str, keys: Sequence[Any]) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute(f"DELETE FROM {full} WHERE {self.quote(key)} IN ({self._in_list(len(keys))})", tuple(keys))
+        finally:
+            cur.close()
+
+    def merge_table(self, schema: str, table: str, cols: list[ColumnDef], key_column: str, rows: Iterable[Sequence[Any]], delete_keys: Iterable[Any] = (),
+                    batch_size: int = 300, before_sink: Optional[Callable[[list[tuple]], None]] = None, verify_values: bool = True,
+                    expected_rows: Optional[int] = None) -> MergeOutcome:
+        """Apply a delta to a table that an earlier delivery created: for every record, replace the row with the same key or insert it, and
+        delete the keys in `delete_keys`. ONE transaction, committed only when (1) the row count after equals the count before plus the new
+        records minus the deleted ones, (2) every delivered record can be read back with exactly the values that were sent (when
+        `verify_values`), and (3) `before_sink` has received a copy of every row that was replaced or deleted, so the merge can be undone
+        exactly. Any failure rolls everything back; this is DML only, so that holds on every dialect."""
+        table = self.natural_case(table)
+        cols = [ColumnDef(self.natural_case(c.name), c.kind, c.length, c.nullable) for c in cols]
+        names = [c.name for c in cols]
+        key = self.natural_case(key_column)
+        if key not in names:
+            raise ConnectorError(f"the key column {key} is not among the delivered columns")
+        kidx = names.index(key)
+        started = time.monotonic()
+        batch_size = max(1, min(int(batch_size), 500))                  # SQL Server allows 2100 parameters per statement; stay far below
+        sent_fp = Fingerprint(names, [kidx])
+        sent_keys: list[Any] = []
+        inserted = updated = deleted = before_n = 0
+        with self.session(read_only=False) as conn:
+            self._check_schema(conn, schema)
+            self._check_target(conn, schema, table, names)
+            held_names = {c.name for c in self._columns(conn, schema, table)}
+            if held_names != set(names):
+                raise ConnectorError(f"{schema}.{table} has different columns than this delivery ("
+                                     f"{', '.join(sorted(held_names ^ set(names)))}): it cannot be merged into")
+            full = f"{self.quote(schema)}.{self.quote(table)}"
+            insert = self.insert_sql(schema, table, cols)
+            try:
+                rows_before = int(self._query(conn, f"SELECT COUNT(*) FROM {full}")[0][0])
+                def take_before(old: list[tuple]) -> None:
+                    nonlocal before_n
+                    if old and before_sink:
+                        before_sink([tuple(to_text(v) for v in r) for r in old])
+                    before_n += len(old)
+
+                chunk: list[tuple] = []
+
+                def flush() -> None:
+                    nonlocal inserted, updated
+                    if not chunk:
+                        return
+                    keys = [r[kidx] for r in chunk]
+                    old = self._fetch_by_keys(conn, full, names, key, keys)
+                    take_before(old)
+                    if old:
+                        self._delete_by_keys(conn, full, key, keys)
+                    self._insert_chunk(conn, insert, chunk)
+                    updated += len(old)
+                    inserted += len(chunk) - len(old)
+                    chunk.clear()
+
+                for row in rows:
+                    row = tuple(row)
+                    sent_fp.add(row)
+                    sent_keys.append(row[kidx])
+                    chunk.append(row)
+                    if len(chunk) >= batch_size:
+                        flush()
+                flush()
+                pending: list[Any] = []
+                for k in delete_keys:
+                    pending.append(k)
+                    if len(pending) >= batch_size:
+                        old = self._fetch_by_keys(conn, full, names, key, pending)
+                        take_before(old)
+                        self._delete_by_keys(conn, full, key, pending)
+                        deleted += len(old)
+                        pending = []
+                if pending:
+                    old = self._fetch_by_keys(conn, full, names, key, pending)
+                    take_before(old)
+                    self._delete_by_keys(conn, full, key, pending)
+                    deleted += len(old)
+                rows_after = int(self._query(conn, f"SELECT COUNT(*) FROM {full}")[0][0])
+                if rows_after != rows_before + inserted - deleted:
+                    raise ConnectorError(f"row count check failed: the table held {rows_before} row(s), {inserted} were added and {deleted} removed, "
+                                         f"it now holds {rows_after}; nothing was kept")
+                if expected_rows is not None and inserted + updated != expected_rows:
+                    raise ConnectorError(f"{inserted + updated} record(s) were applied but {expected_rows} were expected; nothing was kept")
+                if verify_values:
+                    held = Fingerprint(names, [kidx])
+                    for i in range(0, len(sent_keys), batch_size):
+                        for r in self._fetch_by_keys(conn, full, names, key, sent_keys[i:i + batch_size]):
+                            held.add(r)
+                    wrong = sent_fp.differing_columns(held)
+                    if wrong:
+                        raise ConnectorError("value check failed: the table holds different values than were sent in column(s) " + ", ".join(wrong)
+                                             + f" ({held.rows} of {sent_fp.rows} record(s) read back); nothing was kept")
+                conn.commit()
+            except ConnectorError:
+                self._undo(conn, schema, table, False)
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self._undo(conn, schema, table, False)
+                raise ConnectorError(f"the merge failed and was rolled back: {self._scrub(exc)}") from None
+        return MergeOutcome(inserted=inserted, updated=updated, deleted=deleted, rows_before=rows_before, rows_after=rows_after, before_rows=before_n,
+                            seconds=time.monotonic() - started, values_verified=verify_values, cells_compared=sent_fp.cells if verify_values else 0,
+                            value_digest=sent_fp.digest if verify_values else "")
+
+    def rollback_merge(self, schema: str, table: str, cols: list[ColumnDef], key_column: str, run_column: str, run_id: int,
+                       before_rows: Iterable[Sequence[Any]], expected_mine: int, expected_before: int, batch_size: int = 300) -> MergeRollbackOutcome:
+        """Undo a merge: delete every row the run wrote (new and replaced alike), then put the before-image back (the old versions of the
+        replaced rows and the rows it deleted). One transaction, committed only when the table holds the rows the merge left (a changed
+        table is not rolled back automatically) and the counts after the restore add up."""
+        table = self.natural_case(table)
+        cols = [ColumnDef(self.natural_case(c.name), c.kind, c.length, c.nullable) for c in cols]
+        names = [c.name for c in cols]
+        run_column = self.natural_case(run_column)
+        started = time.monotonic()
+        with self.session(read_only=False) as conn:
+            self._check_schema(conn, schema)
+            self._check_target(conn, schema, table, names)
+            full = f"{self.quote(schema)}.{self.quote(table)}"
+            run_q = self.quote(run_column)
+            try:
+                total = int(self._query(conn, f"SELECT COUNT(*) FROM {full}")[0][0])
+                mine = int(self._query(conn, f"SELECT COUNT(*) FROM {full} WHERE {run_q} = {int(run_id)}")[0][0])
+                if mine != expected_mine:
+                    raise ConnectorError(f"{schema}.{table} holds {mine} row(s) of run {run_id} but the merge wrote {expected_mine}; "
+                                         "it has been changed since, so it is not rolled back automatically")
+                cur = conn.cursor()
+                try:
+                    cur.execute(f"DELETE FROM {full} WHERE {run_q} = {int(run_id)}")
+                    insert = self.insert_sql(schema, table, cols)
+                    kinds = [c.kind for c in cols]
+                    restored = 0
+                    batch: list[tuple] = []
+                    for row in before_rows:                                        # the before-image is text: ints back to ints, empty back to NULL
+                        batch.append(tuple((None if v in (None, "") else (int(v) if kinds[i] == "int" else v)) for i, v in enumerate(row)))
+                        if len(batch) >= batch_size:
+                            self._insert_many(cur, insert, batch)
+                            restored += len(batch)
+                            batch = []
+                    if batch:
+                        self._insert_many(cur, insert, batch)
+                        restored += len(batch)
+                finally:
+                    cur.close()
+                if restored != expected_before:
+                    raise ConnectorError(f"the before-image holds {restored} row(s) but {expected_before} were expected; nothing was changed")
+                after = int(self._query(conn, f"SELECT COUNT(*) FROM {full}")[0][0])
+                if after != total - mine + restored:
+                    raise ConnectorError(f"the rollback check failed (before {total}, removed {mine}, restored {restored}, after {after}); nothing was changed")
+                conn.commit()
+            except ConnectorError:
+                self._undo(conn, schema, table, False)
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self._undo(conn, schema, table, False)
+                raise ConnectorError(f"the rollback failed and was undone: {self._scrub(exc)}") from None
+        return MergeRollbackOutcome(removed=mine, restored=restored, rows_before=total, rows_after=after, seconds=time.monotonic() - started)
+
+    def rollback_delivery(self, schema: str, table: str, run_column: str, run_id: int, expected_rows: Optional[int] = None) -> RollbackOutcome:
+        """Undo a delivery: delete exactly the rows that carry `run_id` in `run_column`, in ONE transaction that is only committed when the
+        count before, the number removed and the count after agree (and, when `expected_rows` is given, when that many rows were there).
+        If the table then holds nothing it is dropped as well, so a rolled-back delivery leaves no empty table behind. Rows of other runs
+        are never touched."""
+        started = time.monotonic()
+        with self.session(read_only=False) as conn:
+            self._check_schema(conn, schema)
+            self._check_target(conn, schema, table, [run_column])
+            full = f"{self.quote(schema)}.{self.quote(table)}"
+            col = self.quote(run_column)
+            total = int(self._query(conn, f"SELECT COUNT(*) FROM {full}")[0][0])
+            mine = int(self._query(conn, f"SELECT COUNT(*) FROM {full} WHERE {col} = {int(run_id)}")[0][0])
+            if mine == 0:
+                raise ConnectorError(f"{schema}.{table} holds no rows of run {run_id}: nothing to roll back")
+            if expected_rows is not None and mine != expected_rows:
+                raise ConnectorError(f"{schema}.{table} holds {mine} row(s) of run {run_id} but {expected_rows} were delivered; "
+                                     "it has been changed since, so it is not rolled back automatically")
+            try:
+                cur = conn.cursor()
+                try:
+                    cur.execute(f"DELETE FROM {full} WHERE {col} = {int(run_id)}")
+                finally:
+                    cur.close()
+                left = int(self._query(conn, f"SELECT COUNT(*) FROM {full}")[0][0])
+                gone = int(self._query(conn, f"SELECT COUNT(*) FROM {full} WHERE {col} = {int(run_id)}")[0][0])
+                if gone != 0 or left != total - mine:
+                    raise ConnectorError(f"the rollback check failed (before {total}, run rows {mine}, after {left}, run rows still there {gone}); nothing was changed")
+                conn.commit()
+            except ConnectorError:
+                self._undo(conn, schema, table, False)
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self._undo(conn, schema, table, False)
+                raise ConnectorError(f"the rollback failed and was undone: {self._scrub(exc)}") from None
+            dropped = False
+            if left == 0:
+                self._drop(conn, schema, table)
+                conn.commit()
+                dropped = True
+        return RollbackOutcome(removed=mine, remaining=left, table_dropped=dropped, seconds=time.monotonic() - started)
 
     def _undo(self, conn: Any, schema: str, table: str, created: bool) -> None:
         """Leave nothing behind: roll back, and where DDL cannot be rolled back drop the table we created."""

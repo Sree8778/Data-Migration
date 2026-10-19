@@ -137,7 +137,23 @@ with sync_playwright() as p:
     assert "delivered" in frame.locator("#toast").inner_text(), frame.locator("#toast").inner_text()
     frame.locator("#db-history table").wait_for()
     assert "matches" in frame.locator("#db-history").inner_text()
+    assert "cells checked" in frame.locator("#db-history").inner_text()      # every value was read back before the commit
     page.screenshot(path="mock_data/governance_db_delivery.png")
+
+    # ------------------------------------------------------------ 3b. the value comparison, now and after someone edits the table
+    frame.locator("#toast").evaluate("el => { el.className = ''; }")
+    frame.locator("#db-history .db-verify").click()
+    frame.locator("#toast.show", has_text="identical to the validated payload").wait_for()
+    frame.locator("#db-history", has_text="still identical").wait_for()
+    admin.autocommit = True
+    cur = admin.cursor()
+    cur.execute("UPDATE staging.mig_bp_e2e SET but000_name_org1 = 'Edited by hand' WHERE legacy_key = (SELECT min(legacy_key) FROM staging.mig_bp_e2e)")
+    frame.locator("#toast").evaluate("el => { el.className = ''; }")
+    frame.locator("#db-history .db-verify").click()
+    frame.locator("#toast.show", has_text="The table has changed: but000_name_org1").wait_for()
+    frame.locator("#db-history", has_text="changed: but000_name_org1").wait_for()
+    print("value comparison:", frame.locator("#toast").inner_text())
+    page.screenshot(path="mock_data/governance_db_values.png")
     browser.close()
 
 # ------------------------------------------------------------------ the database itself is the witness
@@ -152,7 +168,27 @@ checks = {c["name"]: c for c in steward.get(f"/api/reconciliation/{run_id}").jso
 delivery = [c for n, c in checks.items() if n.startswith("db_delivery_")]
 assert len(delivery) == 1 and delivery[0]["passed"], delivery
 print("certificate:", delivery[0]["detail"][:150])
-cur.execute("DROP TABLE staging.mig_bp_e2e")                       # tidy up the demo database
+
+# ------------------------------------------------------------------ the delivery is undone from the Governance hub (this also tidies the demo database)
+with sync_playwright() as p2:
+    browser2 = p2.chromium.launch(channel="msedge", headless=True)
+    page2 = browser2.new_page(viewport={"width": 1400, "height": 940})
+    page2.add_init_script(f"localStorage.setItem('migration.user', '{STEWARD}')")
+    page2.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+    page2.on("pageerror", lambda e: errors.append(str(e)))
+    page2.on("dialog", lambda d: d.accept("the demo is over, undo this delivery"))
+    page2.goto(f"{BASE}/ui/governance/{run_id}")
+    page2.locator("#db-history .db-rollback").click()
+    page2.locator("#toast.show", has_text="removed from").wait_for()
+    page2.locator("#db-history", has_text="rolled back by").wait_for()
+    print("rollback:", page2.locator("#toast").inner_text())
+    cur.execute("SELECT count(*) FROM pg_tables WHERE schemaname = 'staging' AND tablename = 'mig_bp_e2e'")
+    assert cur.fetchone()[0] == 0                                   # emptied, so the table went with its rows
+    checks = {c["name"]: c for c in steward.get(f"/api/reconciliation/{run_id}").json()["report"]["checks"]}
+    rolled = [c for n, c in checks.items() if n.startswith("db_rollback_")]
+    assert len(rolled) == 1 and rolled[0]["passed"] and "the demo is over" in rolled[0]["detail"], rolled
+    print("certificate:", rolled[0]["detail"][:170])
+    browser2.close()
 admin.close()
 
 unexpected = [e for e in errors if "422" not in e]

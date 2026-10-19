@@ -134,7 +134,8 @@ class RunReport(_Model):
     mapping_set_id: int
     wave_name: str
     status: str
-    source_records: int
+    source_records: int  # every row of the file, including the ones an exclusion rule left behind
+    excluded_records: int = 0  # rows left out on purpose by the mapping set's exclusion rules (kept in excluded.parquet with the reason)
     transformed_records: int
     failed_records: int
     lineage_rows: int

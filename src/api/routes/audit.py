@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from pathlib import Path
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -13,11 +14,14 @@ from src.api.deps import get_ctx, require_user
 from src.api.schemas import (
     DefectDetail,
     DefectsResponse,
+    DeltaRequest,
     JiraSyncResponse,
     ReconciliationResponse,
     RunSummary,
 )
 from src.db.models import CatColumn, CatTable, MapFieldRule, MigMigrationRun
+from src.schemas.delta import DeltaReport
+from src.api.views import delta_report
 from src.schemas.sap import CheckResult
 from src.schemas.source import SnapshotInfo
 from src.schemas.validation import ROOT_CAUSE_BY_KIND, Severity, kind_for_signature
@@ -86,6 +90,21 @@ def get_run(run_id: int, ctx: AppContext = Depends(get_ctx)) -> RunSummary:
         return _run_summary(ctx, run)
 
 
+@router.post("/runs/{run_id}/delta", response_model=DeltaReport)
+def compute_delta(run_id: int, body: DeltaRequest = DeltaRequest(), ctx: AppContext = Depends(get_ctx)) -> DeltaReport:
+    """What changed since an earlier run, on the valid records and the SAP target fields: new, changed, unchanged, and removed (with the
+    reason). Every run is still validated against the whole population; the delta only says what is worth delivering again. The records
+    to deliver are written to the run folder (delta_valid.parquet) and delivered with `mode: merge` on a database target."""
+    return delta_report(ctx, run_id, body.baseline_run)
+
+
+@router.get("/runs/{run_id}/delta", response_model=Optional[DeltaReport])
+def get_delta(run_id: int, ctx: AppContext = Depends(get_ctx)) -> Optional[DeltaReport]:
+    """The last delta computed for this run (null until one has been)."""
+    path = ctx.run_dir(run_id) / "delta" / "delta.json"
+    return DeltaReport.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
 def _add_extract_checks(report, snapshot_path) -> None:
     """Stage zero of the audit trail: the pipeline read exactly what was landed, and the landing matched the source."""
     if not snapshot_path.is_file():
@@ -108,19 +127,52 @@ def _add_db_delivery_checks(report, run_dir) -> None:
     for d in DbLoaderService.deliveries(run_dir):
         latest[(d["connection"], d["schema"], d["table"])] = d
     for d in latest.values():
-        report.checks.append(CheckResult(
-            name=f"db_delivery_{d['dialect']}_{d['schema']}.{d['table']}",
-            passed=d["rows_in_target"] == d["rows_loaded"] == d["valid_records"],
+        if d.get("rolled_back"):
+            rb = d["rolled_back"]
+            report.checks.append(CheckResult(
+                name=f"db_rollback_{d['dialect']}_{d['schema']}.{d['table']}", passed=rb["rows_removed"] == d["rows_loaded"],
+                detail=f"delivery of {d['rows_loaded']} row(s) into {d['dialect']} {d['database']}:{d['schema']}.{d['table']} rolled back by {rb['by']} at {rb['at']} "
+                       f"({rb['reason']}): {rb['rows_removed']} row(s) removed, {rb['rows_remaining']} left" + ("; table dropped" if rb["table_dropped"] else "")))
+            continue
+        if d.get("mode") == "merge":
+            where_m = f"{d['dialect']} {d['database']}:{d['schema']}.{d['table']}"
+            report.checks.append(CheckResult(
+                name=f"db_merge_{d['dialect']}_{d['schema']}.{d['table']}",
+                passed=d["rows_in_target"] == d["rows_before"] + d["inserted_new"] - d["deleted"] and d["rows_loaded"] == d["valid_records"],
+                detail=f"delta of run {d['run_id']} against run {d['baseline_run']} applied to {where_m}: {d['inserted_new']} new, {d['updated']} replaced, "
+                       f"{d['deleted']} deleted; the table held {d['rows_before']} row(s) before and {d['rows_in_target']} counted after the merge; "
+                       f"{d['before_rows']} replaced or deleted row(s) kept in {d['before_image']} (merged by {d['loaded_by']} at {d['loaded_at']})"))
+        else:
+            report.checks.append(CheckResult(
+                name=f"db_delivery_{d['dialect']}_{d['schema']}.{d['table']}",
+                passed=d["rows_in_target"] == d["rows_loaded"] == d["valid_records"],
             detail=f"{d['rows_in_target']} row(s) counted in {d['dialect']} {d['database']}:{d['schema']}.{d['table']} after the load; "
                    f"{d['rows_loaded']} sent; {d['valid_records']} validated record(s) in the run (loaded by {d['loaded_by']} at {d['loaded_at']})"))
+        where = f"{d['dialect']} {d['database']}:{d['schema']}.{d['table']}"
+        if d.get("values_verified"):
+            report.checks.append(CheckResult(
+                name=f"db_values_{d['dialect']}_{d['schema']}.{d['table']}", passed=True,
+                detail=f"{d['cells_compared']:,} cell(s) read back from {where} before the commit equal what was sent (content fingerprint {d['value_digest']})"))
+        elif "values_verified" in d:
+            report.checks.append(CheckResult(
+                name=f"db_values_{d['dialect']}_{d['schema']}.{d['table']}", passed=False,
+                detail=f"the values delivered into {where} were NOT compared with what was sent (verification was switched off)"))
+        if d.get("verifications"):
+            last = d["verifications"][-1]
+            report.checks.append(CheckResult(
+                name=f"db_values_reverified_{d['dialect']}_{d['schema']}.{d['table']}", passed=bool(last["verified"]),
+                detail=(f"on {last['checked_at']} {last['checked_by']} compared {last['cells_compared']:,} cell(s) of {where} with the validated payload: "
+                        + ("identical" if last["verified"] else f"DIFFERENT in column(s) {', '.join(last['differing_columns']) or '(row counts differ)'}; "
+                           f"payload {last['rows_in_payload']} row(s), table {last['rows_in_target']}"))))
 
 
 # ------------------------------------------------------------------ reconciliation + downloads
 @router.get("/reconciliation/{run_id}", response_model=ReconciliationResponse)
 def get_reconciliation(run_id: int, ctx: AppContext = Depends(get_ctx)) -> ReconciliationResponse:
     """The reconciliation audit report (and Markdown/HTML certificate files) for a run."""
-    report = ctx.reconciliation.generate_reconciliation_report(run_id, ctx.load_validation_report(run_id))
     directory = ctx.run_dir(run_id)
+    report = ctx.reconciliation.generate_reconciliation_report(
+        run_id, ctx.load_validation_report(run_id), ctx.exclusions.read_applied(directory))
     directory.mkdir(parents=True, exist_ok=True)
     _add_extract_checks(report, directory / "source_snapshot.json")
     _add_db_delivery_checks(report, directory)

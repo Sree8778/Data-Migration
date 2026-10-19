@@ -129,9 +129,61 @@ class DbLoadRequest(_In):
     connection: str
     schema_name: Optional[str] = Field(default=None, max_length=128, description="default: the target connection's default schema")
     table_name: str = Field(min_length=1, max_length=30)
-    mode: Literal["create", "replace"] = Field(default="create", description="create fails if the table exists; replace drops it first")
+    mode: Literal["create", "replace", "merge"] = Field(
+        default="create", description="create fails if the table exists; replace drops it first; merge applies this run's delta (new and changed records) to the table "
+                                      "that the baseline run delivered")
+    baseline_run: Optional[int] = Field(default=None, ge=1, description="merge only: the earlier run whose delivery this run updates")
+    delete_removed: bool = Field(default=False, description="merge only: also delete the records that are no longer valid (gone, rejected, duplicates)")
     include_source_columns: bool = Field(default=False, description="also deliver the raw legacy values (SRC_*)")
     batch_size: int = Field(default=1000, ge=1, le=10000)
+    verify_values: bool = Field(default=True, description="read every value back before committing and refuse the delivery if any differs from what was sent")
+
+
+class DbVerifyRequest(_In):
+    connection: str
+    schema_name: Optional[str] = Field(default=None, max_length=128)
+    table_name: str = Field(min_length=1, max_length=30)
+
+
+class DeltaRequest(_In):
+    baseline_run: Optional[int] = Field(default=None, ge=1, description="the earlier run to compare with (default: the latest earlier run of the same mapping set that has a validated payload)")
+
+
+class DbRollbackRequest(_In):
+    connection: str
+    schema_name: Optional[str] = Field(default=None, max_length=128)
+    table_name: str = Field(min_length=1, max_length=30)
+    reason: str = Field(min_length=3, max_length=300, description="why the delivery is being undone; kept in the record and shown on the certificate")
+
+
+class DbRollbackResult(BaseModel):
+    run_id: int
+    connection: str
+    schema_name: str
+    table: str
+    by: str
+    at: str
+    reason: str
+    rows_removed: int
+    rows_remaining: int
+    table_dropped: bool
+    replaced_an_older_table: bool
+    rows_restored: int = 0  # merge rollbacks: replaced and deleted rows put back from the before-image
+
+
+class DbVerifyResult(BaseModel):
+    run_id: int
+    connection: str
+    schema_name: str
+    table: str
+    verified: bool
+    differing_columns: list[str]
+    rows_in_payload: int
+    rows_in_target: int
+    cells_compared: int
+    digest: str
+    checked_by: str
+    checked_at: str
 
 
 class DbLoadPreviewColumn(BaseModel):
@@ -170,6 +222,17 @@ class DbLoadResult(BaseModel):
     loaded_by: str
     loaded_at: str
     ddl: str
+    values_verified: bool = False  # every value was read back from the target before the commit and equals what was sent
+    cells_compared: int = 0
+    value_digest: str = ""
+    verifications: list[dict] = []  # later on-demand comparisons of the live table with the validated payload
+    rolled_back: Optional[dict] = None  # who undid this delivery, when, why, and how many rows that removed
+    baseline_run: Optional[int] = None  # merge deliveries: the run whose table this one updated
+    inserted_new: int = 0
+    updated: int = 0
+    deleted: int = 0
+    rows_before: Optional[int] = None
+    before_rows: int = 0  # rows copied to the before-image (replaced and deleted ones), which a rollback puts back
 
 
 class TargetKind(BaseModel):
@@ -190,6 +253,24 @@ class TargetsResponse(BaseModel):
 
 class TargetTestRequest(_In):
     target: Literal["sandbox", "live"]
+
+
+class SapDiagnoseRequest(_In):
+    write_test: bool = Field(default=False, description="also create ONE clearly marked test partner, read it back and try an invalid payload; needs an explicit yes")
+    test_grouping: str = Field(default="BP01", max_length=4, description="business partner grouping used for the test partner")
+
+
+class SapDiagnosticOut(BaseModel):
+    name: str
+    status: str  # pass | warn | fail | skip
+    detail: str
+    hint: str = ""
+
+
+class SapDiagnoseResult(BaseModel):
+    ok: bool  # no check failed
+    checks: list[SapDiagnosticOut]
+    wrote: bool  # a test partner was created
 
 
 class TargetTestResult(BaseModel):

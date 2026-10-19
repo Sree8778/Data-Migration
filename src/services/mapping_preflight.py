@@ -28,11 +28,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.db.enums import RuleType
 from src.db.models import CatColumn, CatTable, MapFieldRule, MapTableRule
+from src.schemas.exclusion import ExclusionRule
 from src.schemas.execution import LineageMode
 from src.schemas.preflight import FindingSeverity, PreflightFinding, PreflightReport, RuleCheck, UnmatchedValue
 from src.services._duckdb_util import bounded_connection, file_relation, lit, q
 from src.services.lookup_service import LookupService
 from src.services.metadata_service import NotFoundError
+from src.services.row_exclusion import apply_exclusions
 from src.services.transformation_engine import ERRORS_COLUMN, TransformationEngine
 from src.services.validation_engine import ValidationEngine
 
@@ -71,6 +73,7 @@ class MappingPreflightService:
         warn_rate: float = DEFAULT_WARN_RATE,
         file_columns: Optional[set[str]] = None,
         unmapped_mandatory: Optional[list[str]] = None,
+        exclusions: Optional[list[ExclusionRule]] = None,
     ) -> PreflightReport:
         """`file_columns`: lower-cased columns of the landed file, to catch rules that read a column the file no longer has."""
         rules = self._load_rules(mapping_set_id)
@@ -120,7 +123,7 @@ class MappingPreflightService:
             add(FindingSeverity.WARNING, "NOT_SAMPLED", "no source file is landed for this table, so the rules could only be checked structurally")
         elif runnable and rules:
             try:
-                sample_n, source_rows, valid_rate = self._dry_run(mapping_set_id, Path(source_path), rules, checks, sample_rows)
+                sample_n, source_rows, valid_rate = self._dry_run(mapping_set_id, Path(source_path), rules, checks, sample_rows, exclusions or [])
                 sampled = True
             except Exception as exc:  # noqa: BLE001 - a rule the engine cannot even compile is itself the finding
                 add(FindingSeverity.BLOCKER, "DRY_RUN_FAILED", f"the mapping could not be run on a sample: {str(exc)[:300]}")
@@ -148,7 +151,7 @@ class MappingPreflightService:
             sample_rows=sample_n, source_rows=source_rows, valid_rate=valid_rate, block_rate=block_rate, warn_rate=warn_rate,
             can_submit=blockers == 0, blockers=blockers, warnings=len(findings) - blockers,
             findings=sorted(findings, key=lambda f: (f.severity != FindingSeverity.BLOCKER, f.code)),
-            rules=list(checks.values()), models=models)
+            rules=list(checks.values()), models=models, exclusion_rules=[r.rule_id for r in exclusions or []])
 
     # ------------------------------------------------------------------ the rules
     def _load_rules(self, mapping_set_id: int) -> list[dict]:
@@ -175,7 +178,8 @@ class MappingPreflightService:
         return out
 
     # ------------------------------------------------------------------ the dry run
-    def _dry_run(self, mapping_set_id: int, source: Path, rules: list[dict], checks: dict[int, RuleCheck], sample_rows: int) -> tuple[int, int, float]:
+    def _dry_run(self, mapping_set_id: int, source: Path, rules: list[dict], checks: dict[int, RuleCheck], sample_rows: int,
+                 exclusions: list[ExclusionRule]) -> tuple[int, int, float]:
         lookup_sources = list(dict.fromkeys(r["source"] for r in rules if r["rule_type"] == RuleType.VALUE_MAPPING.value and r["source"]))
         with tempfile.TemporaryDirectory(prefix="preflight_") as tmp:
             sample = Path(tmp) / "sample.parquet"
@@ -184,6 +188,8 @@ class MappingPreflightService:
                 total = int(con.execute(f"SELECT count(*) FROM {relation}").fetchone()[0])
                 take = f"SELECT * FROM {relation}" + (f" USING SAMPLE reservoir({int(sample_rows)} ROWS) REPEATABLE ({SAMPLE_SEED})" if total > sample_rows else "")
                 con.execute(f"COPY ({take}) TO {lit(sample.as_posix())} (FORMAT parquet)")
+            if exclusions:  # the run leaves these rows behind, so the sample must not judge the rules on them
+                sample = Path(apply_exclusions(sample, exclusions, Path(tmp) / "sample_included.parquet", None, self._memory).included_path)
             staging = Path(tmp) / "staging.parquet"
             self._transformer.transform(mapping_set_id, sample, staging, lineage_mode=LineageMode.NONE, passthrough_columns=lookup_sources or None)
             report = self._validator.validate(mapping_set_id, staging, None)

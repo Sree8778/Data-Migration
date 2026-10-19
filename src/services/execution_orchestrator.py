@@ -23,8 +23,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from src.db.enums import MappingStatus, MigrationPhase, RunStatus
 from src.db.models import MapTableRule, MigMigrationRun
 from src.schemas.execution import DedupConfig, DedupReport, RunReport, TransformationResult
+from src.schemas.exclusion import ExclusionResult, ExclusionRule
 from src.services.deduplication_engine import DeduplicationEngine
 from src.services.metadata_service import MappingValidationError, NotFoundError
+from src.services.row_exclusion import ExclusionStore, apply_exclusions
 from src.services.transformation_engine import TransformationEngine
 
 
@@ -57,12 +59,15 @@ class ExecutionOrchestrator:
         source_path: str | Path,
         wave_name: str = "WAVE_1",
         dedup_config: Optional[DedupConfig] = None,
+        exclusions: Optional[list[ExclusionRule]] = None,
         **transform_options: Any,
     ) -> RunReport:
         """Transform (and optionally deduplicate) a source file under a new migration run.
 
         `transform_options` are passed to `TransformationEngine.transform` (passthrough_columns,
-        lookup_fallback, lineage_mode, ...). Raises ExecutionError if anything fails; a failed-record
+        lookup_fallback, lineage_mode, ...). `exclusions` are the mapping set's "leave this row out" rules: the file is split first, the
+        excluded rows are kept in excluded.parquet with the rule and reason that removed each, and only the rest is transformed.
+        Raises ExecutionError if anything fails; a failed-record
         ratio above `max_failed_ratio` yields a report with status FAILED instead.
         """
         run_id, started_at = self._start_run(mapping_set_id, wave_name)
@@ -70,13 +75,20 @@ class ExecutionOrchestrator:
         run_dir.mkdir(parents=True, exist_ok=True)
         transformation: Optional[TransformationResult] = None
         dedup: Optional[DedupReport] = None
+        left_out: Optional[ExclusionResult] = None
         try:
+            transform_source: str | Path = source_path
+            if exclusions:
+                left_out = apply_exclusions(Path(source_path), exclusions, run_dir / "source_included.parquet", run_dir / "excluded.parquet")
+                ExclusionStore.write_applied(run_dir, left_out)
+                transform_source = left_out.included_path
             transformation = self._transformer.transform(
-                mapping_set_id, source_path, run_dir / "staging.parquet", run_id=run_id, **transform_options
+                mapping_set_id, transform_source, run_dir / "staging.parquet", run_id=run_id, **transform_options
             )
+            excluded_rows = left_out.excluded_rows if left_out else 0
             self._update_run(
                 run_id,
-                records_extracted=transformation.source_records,
+                records_extracted=transformation.source_records + excluded_rows,
                 records_transformed=transformation.ok_records,
                 records_failed=transformation.failed_records,
             )
@@ -110,7 +122,8 @@ class ExecutionOrchestrator:
             mapping_set_id=mapping_set_id,
             wave_name=wave_name,
             status=status.value,
-            source_records=transformation.source_records,
+            source_records=transformation.source_records + (left_out.excluded_rows if left_out else 0),
+            excluded_records=left_out.excluded_rows if left_out else 0,
             transformed_records=transformation.ok_records,
             failed_records=transformation.failed_records,
             lineage_rows=transformation.lineage_rows,

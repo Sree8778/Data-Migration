@@ -7,12 +7,16 @@ governance gate passing right now. This service then:
   * plans the target table from the validated payload: one column per SAP target field (BUT000_NAME_ORG1, ADRC_CITY1, ...) with
     the length the SAP catalog gives it, plus LEGACY_KEY (the source key, the primary key of the new table, so a record can never
     arrive twice) and MIG_RUN_ID; optionally the raw legacy values (SRC_*)
-  * creates the table and inserts the rows in ONE all-or-nothing operation, reading the row count back before committing
+  * creates the table and inserts the rows in ONE all-or-nothing operation, reading the row count back before committing, and then
+    every VALUE (a per-column content fingerprint of what was sent against what the database holds), so a delivery that arrives with
+    the right number of rows but altered values is refused; `verify` repeats that comparison against the live table at any later time
   * writes the evidence to the run folder (db_loads.json) for the reconciliation certificate
 """
 
 from __future__ import annotations
 
+import csv
+import gzip
 import json
 import re
 from datetime import datetime, timezone
@@ -23,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.connectors.base import ColumnDef, Connector, ConnectorError
+from src.connectors.fingerprint import Fingerprint
 from src.db.enums import TargetType
 from src.db.models import CatColumn, CatDataSource, CatTable
 from src.services._duckdb_util import bounded_connection, lit, q
@@ -49,6 +54,13 @@ class DbLoaderService:
                 .join(CatColumn, CatColumn.table_id == CatTable.id).join(CatDataSource, CatTable.source_id == CatDataSource.id)
                 .where(CatDataSource.target_type == TargetType.TARGET, CatTable.business_object == "BUSINESS_PARTNER")).all()
         return {f"{t}_{c}": length for t, c, length in rows}
+
+    def target_columns(self, valid_path: str | Path) -> list[str]:
+        """The SAP target fields (BUT000_NAME_ORG1, ADRC_CITY1, ...) a validated payload holds, sorted: what a delivery or a delta compares."""
+        catalog = self._target_lengths()
+        with bounded_connection(self._memory) as con:
+            names = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet({lit(Path(valid_path).as_posix())})").fetchall()]
+        return sorted(n for n in names if n in catalog)
 
     def plan(self, valid_path: str | Path, run_id: int, include_source_columns: bool = False) -> tuple[list[ColumnDef], str, int]:
         """(columns of the new table, the SELECT that yields their values in order, row count)."""
@@ -112,14 +124,15 @@ class DbLoaderService:
                     yield (row[0], int(row[1]), *row[2:])
 
     def deliver(self, connector: Connector, run_id: int, valid_path: str | Path, run_dir: Path, connection_name: str, schema: str, table: str,
-                mode: str, user: str, include_source_columns: bool = False, batch_size: int = 1000) -> dict[str, Any]:
+                mode: str, user: str, include_source_columns: bool = False, batch_size: int = 1000, verify_values: bool = True) -> dict[str, Any]:
         cols, select_sql, total = self.plan(valid_path, run_id, include_source_columns)
         if total == 0:
             raise DbLoadError("the validated payload has no rows to deliver")
         started = datetime.now(timezone.utc)
         rows = self._rows(select_sql)
         try:
-            outcome = connector.load_table(schema, table, cols, [KEY_COLUMN], rows, mode=mode, batch_size=batch_size, expected_rows=total)
+            outcome = connector.load_table(schema, table, cols, [KEY_COLUMN], rows, mode=mode, batch_size=batch_size, expected_rows=total,
+                                           verify_values=verify_values)
         except ConnectorError as exc:
             raise DbLoadError(str(exc)) from exc
         finally:
@@ -130,12 +143,174 @@ class DbLoaderService:
             "columns": len(cols), "include_source_columns": include_source_columns, "valid_records": total, "rows_loaded": outcome.rows_inserted,
             "rows_in_target": outcome.rows_in_target, "replaced_existing": outcome.replaced_existing, "seconds": round(outcome.seconds, 2),
             "loaded_by": user, "loaded_at": started.isoformat(timespec="seconds"), "ddl": outcome.ddl,
+            "values_verified": outcome.values_verified, "cells_compared": outcome.cells_compared, "value_digest": outcome.value_digest,
+            "verifications": [],
         }
         history = self.deliveries(run_dir)
         history.append(record)
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / DELIVERIES_FILE).write_text(json.dumps(history, indent=1), encoding="utf-8")
         return record
+
+    def verify(self, connector: Connector, run_id: int, valid_path: str | Path, run_dir: Path, connection_name: str, schema: str, table: str,
+               user: str) -> dict[str, Any]:
+        """Compare what the target table holds NOW with the run's validated payload, value by value. Catches a table that was edited,
+        truncated or partly deleted after the delivery. The result is appended to that delivery's record (the certificate reads it)."""
+        history = self.deliveries(run_dir)
+        table = connector.natural_case(table)
+        index = next((i for i in range(len(history) - 1, -1, -1)
+                      if (history[i]["connection"], history[i]["schema"], history[i]["table"]) == (connection_name, schema, table)), None)
+        if index is None:
+            raise DbLoadError(f"run {run_id} has no recorded delivery into {schema}.{table} on connection '{connection_name}'")
+        delivery = history[index]
+        cols, select_sql, total = self.plan(valid_path, run_id, bool(delivery.get("include_source_columns")))
+        names = [connector.natural_case(c.name) for c in cols]
+        key = connector.natural_case(KEY_COLUMN)
+        expected = Fingerprint(names, [names.index(key)])
+        rows = self._rows(select_sql)
+        try:
+            for row in rows:
+                expected.add(row)
+        finally:
+            rows.close()
+        try:
+            held = connector.fingerprint_table(schema, table, names, [key])
+        except ConnectorError as exc:
+            raise DbLoadError(str(exc)) from exc
+        differing = expected.differing_columns(held)
+        result = {
+            "verified": not differing and held.rows == expected.rows, "differing_columns": differing, "rows_in_payload": expected.rows,
+            "rows_in_target": held.rows, "cells_compared": expected.cells, "digest": held.digest, "checked_by": user,
+            "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        history[index].setdefault("verifications", []).append(result)
+        (run_dir / DELIVERIES_FILE).write_text(json.dumps(history, indent=1), encoding="utf-8")
+        return {"run_id": run_id, "connection": connection_name, "schema": schema, "table": table, **result}
+
+    def rollback(self, connector: Connector, run_id: int, run_dir: Path, connection_name: str, schema: str, table: str, user: str, reason: str) -> dict[str, Any]:
+        """Undo a delivery into a database target: delete the run's rows from the table (and drop the table if that empties it). Needs a
+        reason; recorded with who and when, and shown on the certificate. A delivery that replaced an older table cannot bring the old
+        table back: its rows are gone, so say so before rolling back."""
+        reason = (reason or "").strip()
+        if len(reason) < 3:
+            raise DbLoadError("give a reason for the rollback (it is kept in the record)")
+        history = self.deliveries(run_dir)
+        table = connector.natural_case(table)
+        index = next((i for i in range(len(history) - 1, -1, -1)
+                      if (history[i]["connection"], history[i]["schema"], history[i]["table"]) == (connection_name, schema, table)), None)
+        if index is None:
+            raise DbLoadError(f"run {run_id} has no recorded delivery into {schema}.{table} on connection '{connection_name}'")
+        delivery = history[index]
+        if delivery.get("rolled_back"):
+            raise DbLoadError(f"this delivery was already rolled back by {delivery['rolled_back']['by']} at {delivery['rolled_back']['at']}")
+        if delivery.get("mode") == "merge":
+            restored = self._rollback_merge(connector, run_id, run_dir, delivery, schema, table)
+            delivery["rolled_back"] = {"by": user, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "reason": reason,
+                                       "replaced_an_older_table": False, **restored}
+            (run_dir / DELIVERIES_FILE).write_text(json.dumps(history, indent=1), encoding="utf-8")
+            return {"run_id": run_id, "connection": connection_name, "schema": schema, "table": table, **delivery["rolled_back"]}
+        try:
+            outcome = connector.rollback_delivery(schema, table, connector.natural_case(RUN_COLUMN), run_id, expected_rows=delivery["rows_loaded"])
+        except ConnectorError as exc:
+            raise DbLoadError(str(exc)) from exc
+        delivery["rolled_back"] = {"by": user, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "reason": reason, "rows_removed": outcome.removed,
+                                   "rows_remaining": outcome.remaining, "table_dropped": outcome.table_dropped,
+                                   "replaced_an_older_table": bool(delivery.get("replaced_existing"))}
+        (run_dir / DELIVERIES_FILE).write_text(json.dumps(history, indent=1), encoding="utf-8")
+        return {"run_id": run_id, "connection": connection_name, "schema": schema, "table": table, **delivery["rolled_back"]}
+
+    # ------------------------------------------------------------------ delta (merge) deliveries
+    @staticmethod
+    def before_image_path(run_dir: Path, connection_name: str, schema: str, table: str) -> Path:
+        slug = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{connection_name}_{schema}_{table}")
+        return run_dir / f"merge_before_{slug}.csv.gz"
+
+    @staticmethod
+    def _keys(path: Optional[str]) -> Iterator[str]:
+        if not path or not Path(path).is_file():
+            return
+        with bounded_connection(256) as con:
+            cur = con.execute(f'SELECT CAST("_SRC_PK" AS VARCHAR) FROM read_parquet({lit(Path(path).as_posix())}) ORDER BY 1')
+            while True:
+                batch = cur.fetchmany(2000)
+                if not batch:
+                    return
+                for (k,) in batch:
+                    yield k
+
+    def deliver_merge(self, connector: Connector, run_id: int, valid_path: str | Path, delta_path: Optional[str], removed_path: Optional[str], baseline_run: int,
+                      run_dir: Path, connection_name: str, schema: str, table: str, user: str, include_source_columns: bool = False,
+                      delete_removed: bool = False, batch_size: int = 300, verify_values: bool = True) -> dict[str, Any]:
+        """Apply a run's delta to a table an earlier run delivered: new and changed records are written (a changed record replaces its row),
+        and with `delete_removed` the records that disappeared are deleted. One transaction; every replaced or deleted row is first copied to a
+        before-image in the run folder, so `rollback` can put the table back exactly as it was."""
+        cols, _, _ = self.plan(valid_path, run_id, include_source_columns)             # the columns of the table, from the full payload
+        n_delta = 0
+        rows: Iterator[tuple] = iter(())
+        if delta_path:
+            _, select_sql, n_delta = self.plan(delta_path, run_id, include_source_columns)
+            rows = self._rows(select_sql)
+        removing = delete_removed and bool(removed_path)
+        if not n_delta and not removing:
+            raise DbLoadError("the delta holds nothing to deliver: no new or changed records" + (" and nothing removed" if delete_removed else ""))
+        run_dir.mkdir(parents=True, exist_ok=True)
+        image = self.before_image_path(run_dir, connection_name, schema, table)
+        started = datetime.now(timezone.utc)
+        handle = gzip.open(image, "wt", encoding="utf-8", newline="")
+        writer = csv.writer(handle, lineterminator="\n")
+        try:
+            outcome = connector.merge_table(schema, table, cols, KEY_COLUMN, rows, delete_keys=self._keys(removed_path) if removing else (),
+                                            batch_size=batch_size, before_sink=writer.writerows, verify_values=verify_values, expected_rows=n_delta)
+            handle.close()
+        except ConnectorError as exc:
+            handle.close()
+            image.unlink(missing_ok=True)
+            raise DbLoadError(str(exc)) from exc
+        except Exception:
+            handle.close()
+            image.unlink(missing_ok=True)
+            raise
+        finally:
+            if hasattr(rows, "close"):
+                rows.close()
+        record = {
+            "run_id": run_id, "connection": connection_name, "dialect": connector.dialect, "host": connector.spec.host, "port": connector.spec.port,
+            "database": connector.spec.database, "schema": schema, "table": connector.natural_case(table), "mode": "merge", "baseline_run": baseline_run,
+            "columns": len(cols), "include_source_columns": include_source_columns, "valid_records": n_delta, "rows_loaded": outcome.inserted + outcome.updated,
+            "inserted_new": outcome.inserted, "updated": outcome.updated, "deleted": outcome.deleted, "rows_before": outcome.rows_before,
+            "rows_in_target": outcome.rows_after, "replaced_existing": False, "seconds": round(outcome.seconds, 2), "loaded_by": user,
+            "loaded_at": started.isoformat(timespec="seconds"), "ddl": "", "values_verified": outcome.values_verified, "cells_compared": outcome.cells_compared,
+            "value_digest": outcome.value_digest, "verifications": [], "before_image": image.name, "before_rows": outcome.before_rows,
+        }
+        history = self.deliveries(run_dir)
+        history.append(record)
+        (run_dir / DELIVERIES_FILE).write_text(json.dumps(history, indent=1), encoding="utf-8")
+        return record
+
+    def _rollback_merge(self, connector: Connector, run_id: int, run_dir: Path, delivery: dict[str, Any], schema: str, table: str) -> dict[str, Any]:
+        image = run_dir / delivery["before_image"]
+        if not image.is_file():
+            raise DbLoadError(f"the before-image of this merge ({delivery['before_image']}) is missing, so the table cannot be restored automatically")
+        cols, _, _ = self.plan(self._delivered_payload(run_dir, run_id), run_id, bool(delivery.get("include_source_columns")))
+
+        def saved() -> Iterator[list[str]]:
+            with gzip.open(image, "rt", encoding="utf-8", newline="") as fh:
+                yield from csv.reader(fh)
+
+        try:
+            out = connector.rollback_merge(schema, table, cols, KEY_COLUMN, RUN_COLUMN, run_id, saved(), expected_mine=delivery["rows_loaded"],
+                                           expected_before=delivery["before_rows"])
+        except ConnectorError as exc:
+            raise DbLoadError(str(exc)) from exc
+        return {"rows_removed": out.removed, "rows_remaining": out.rows_after, "table_dropped": False, "rows_restored": out.restored}
+
+    @staticmethod
+    def _delivered_payload(run_dir: Path, run_id: int) -> Path:
+        try:
+            report = json.loads((run_dir / "validation.json").read_text(encoding="utf-8"))
+            return Path(report["valid_path"])
+        except (OSError, ValueError, KeyError) as exc:
+            raise DbLoadError(f"run {run_id} has no validated payload to read the table's columns from") from exc
 
     @staticmethod
     def deliveries(run_dir: Path) -> list[dict[str, Any]]:

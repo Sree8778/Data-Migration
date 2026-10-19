@@ -57,3 +57,4 @@ class PreflightReport(BaseModel):
     findings: list[PreflightFinding]
     rules: list[RuleCheck]
     models: list[str] = Field(default_factory=list)  # the AI model names recorded on the mapping's rules
+    exclusion_rules: list[int] = Field(default_factory=list)  # ids of the exclusion rules the sample was cut by

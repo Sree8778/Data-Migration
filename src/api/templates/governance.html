@@ -19,6 +19,16 @@
     <button class="btn primary" id="load">Execute load</button>
     <a class="btn" href="/ui/certificate/{{ run_id }}">Reconciliation certificate</a>
   </div>
+  <section class="card" id="delta-panel">
+    <h2>Changes since an earlier run</h2>
+    <p class="muted">Every run is checked against the whole population. This compares its valid records with an earlier run, on the SAP target fields, so a
+      database target can be updated with only what is new or changed.</p>
+    <div class="toolbar">
+      <label>Compare with run <select id="delta-baseline"></select></label>
+      <button class="btn" id="delta-compare">Compare</button>
+    </div>
+    <div id="delta-result"></div>
+  </section>
   <section class="card" id="db-delivery">
     <h2>Deliver to a database target</h2>
     <p class="muted" id="db-hint">Creates a new table in an Oracle, SQL Server, PostgreSQL or MySQL database with the validated records. Same gate as every load: steward sign-off and no open critical defects.</p>
@@ -27,7 +37,9 @@
       <label>Schema<input id="db-schema" maxlength="128" placeholder="connection default"></label>
       <label>New table name<input id="db-table" maxlength="30" value="MIG_BP_RUN{{ run_id }}"></label>
       <label>If the table exists
-        <select id="db-mode"><option value="create">stop (safe)</option><option value="replace">replace it</option></select></label>
+        <select id="db-mode"><option value="create">stop (safe)</option><option value="replace">replace it</option>
+          <option value="merge">merge only the changes since the run chosen above</option></select></label>
+      <label class="check hidden" id="db-delete-wrap"><input type="checkbox" id="db-delete"> Also delete records that are no longer valid</label>
       <label class="check"><input type="checkbox" id="db-src"> Also deliver the raw legacy values (SRC_*)</label>
       <div class="wide"><button class="btn" id="db-preview">Show table &amp; SQL</button> <button class="btn primary" id="db-load">Deliver</button></div>
     </div>

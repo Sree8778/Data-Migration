@@ -23,6 +23,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.db.models import MapTableRule, MigMigrationRun
+from src.schemas.exclusion import ExclusionResult
 from src.schemas.sap import (
     CheckResult,
     DropOffLine,
@@ -39,6 +40,12 @@ from src.services.sap_loader_service import PARTNER_COLUMN
 _SAMPLE_PKS = 5
 
 
+def _parquet_rows(path: Optional[str]) -> int:
+    if not path or not Path(path).is_file():
+        return 0
+    return int(duckdb.connect().execute(f"SELECT count(*) FROM read_parquet({lit(Path(path).as_posix())})").fetchone()[0])
+
+
 class ReconciliationService:
     def __init__(self, session_factory: sessionmaker[Session], sample_size: int = 20) -> None:
         self._session_factory = session_factory
@@ -46,7 +53,7 @@ class ReconciliationService:
 
     # ------------------------------------------------------------------ report
     def generate_reconciliation_report(
-        self, run_id: int, validation_report: Optional[ValidationReport] = None
+        self, run_id: int, validation_report: Optional[ValidationReport] = None, exclusions: Optional[ExclusionResult] = None,
     ) -> ReconciliationReport:
         with self._session_factory() as session:
             run = session.get(MigMigrationRun, run_id)
@@ -74,15 +81,16 @@ class ReconciliationService:
             valid = validation_report.valid_records
             not_attempted = valid - attempted
 
+        excluded = exclusions.excluded_rows if exclusions else 0
         counts = ReconCounts(
-            extracted=extracted, transformed_ok=transformed_ok, transform_failed=extracted - transformed_ok,
+            extracted=extracted, excluded=excluded, transformed_ok=transformed_ok, transform_failed=extracted - excluded - transformed_ok,
             duplicate_children=dup, validation_rejected=rejected, valid=valid, load_attempted=attempted,
             loaded=loaded, load_failed=load_failed, not_attempted=not_attempted,
         )
-        dropoff = self._dropoff(counts, validation_report, facts)
+        dropoff = self._dropoff(counts, validation_report, facts, exclusions)
         accounted = sum(line.count for line in dropoff)
         variance = extracted - accounted
-        checks = self._checks(run_info, mapping_info, counts, facts, validation_report)
+        checks = self._checks(run_info, mapping_info, counts, facts, validation_report, exclusions)
 
         return ReconciliationReport(
             run_id=run_id, wave_name=run_info["wave"], mapping_set_id=mapping_info["id"],
@@ -189,14 +197,20 @@ class ReconciliationService:
                 examples.append(f"source {pk} -> SAP {cell[3]}: {cell[0]} '{cell[1]}' -> '{cell[2]}'")
         return LineageSampleCheck(sampled=len(pks), passed=passed, failures=failures, examples=examples)
 
-    def _dropoff(self, c: ReconCounts, report: Optional[ValidationReport], facts: dict) -> list[DropOffLine]:
+    def _dropoff(self, c: ReconCounts, report: Optional[ValidationReport], facts: dict, exclusions: Optional[ExclusionResult] = None) -> list[DropOffLine]:
         lines = [DropOffLine(reason="LOADED", count=c.loaded,
                              explanation="Created in SAP with a business partner number.")]
+        if c.excluded:
+            lines.append(DropOffLine(
+                reason="EXCLUDED_BY_RULE", count=c.excluded,
+                explanation="Left out on purpose by the mapping set's exclusion rules (kept in excluded.parquet): " + "; ".join(
+                    f"{r.reason} [{r.column} {r.operator.replace('_', ' ')} {', '.join(r.values) or 'blank'}: {r.excluded:,}]"
+                    for r in (exclusions.rules if exclusions else []) if r.excluded)))
         lines.append(DropOffLine(reason="SAP_LOAD_FAILED", count=c.load_failed, sample_pks=facts["failed_sample"],
                                  explanation="Sent to SAP but rejected; the SAP message is stored in the lineage."))
         if report is None:
             lines.append(DropOffLine(
-                reason="NOT_LOADED_BEFORE_SAP", count=c.extracted - c.load_attempted,
+                reason="NOT_LOADED_BEFORE_SAP", count=c.extracted - c.excluded - c.load_attempted,
                 explanation="Duplicates and validation rejects combined (no validation report supplied)."))
             return lines
         lines.append(DropOffLine(
@@ -221,7 +235,8 @@ class ReconciliationService:
         return [r[0] for r in rows]
 
     @staticmethod
-    def _checks(run: dict, mapping: dict, c: ReconCounts, facts: dict, report: Optional[ValidationReport]) -> list[CheckResult]:
+    def _checks(run: dict, mapping: dict, c: ReconCounts, facts: dict, report: Optional[ValidationReport],
+                exclusions: Optional[ExclusionResult] = None) -> list[CheckResult]:
         checks = [
             CheckResult(name="run_counter_loaded_matches_lineage", passed=run["loaded_counter"] == c.loaded,
                         detail=f"records_loaded={run['loaded_counter']}, lineage loaded records={c.loaded}"),
@@ -246,8 +261,9 @@ class ReconciliationService:
         ]
         if report is not None:
             checks += [
-                CheckResult(name="validation_input_equals_extract", passed=report.input_records == c.extracted,
-                            detail=f"validated {report.input_records} rows, extracted {c.extracted}"),
+                CheckResult(name="validation_input_equals_extract", passed=report.input_records == c.extracted - c.excluded,
+                            detail=f"validated {report.input_records} rows, extracted {c.extracted}"
+                                   + (f" less {c.excluded} left out by rule" if c.excluded else "")),
                 CheckResult(name="validation_split_is_consistent",
                             passed=report.duplicate_children_excluded + report.valid_records + report.defective_records
                             == report.input_records,
@@ -256,6 +272,11 @@ class ReconciliationService:
                 CheckResult(name="load_attempts_do_not_exceed_valid_records", passed=(c.not_attempted or 0) >= 0,
                             detail=f"{c.load_attempted} attempted of {c.valid} valid"),
             ]
+        if exclusions is not None and exclusions.excluded_rows:
+            kept = _parquet_rows(exclusions.excluded_path)
+            checks.append(CheckResult(
+                name="rows_left_out_are_kept_with_their_reason", passed=kept == exclusions.excluded_rows,
+                detail=f"{kept} row(s) in excluded.parquet for {exclusions.excluded_rows} excluded"))
         return checks
 
     # ------------------------------------------------------------------ export

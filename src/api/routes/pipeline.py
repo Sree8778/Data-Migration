@@ -11,8 +11,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 
 from src.api.context import AppContext
+from src.api.views import delta_report
 from src.api.deps import get_ctx, require_connection_admin, require_user
-from src.api.schemas import (DbLoadPreview, DbLoadRequest, DbLoadResult, LoadRequest, LoadResponse, PipelineRunRequest, PipelineRunResponse)
+from src.api.schemas import (DbLoadPreview, DbLoadRequest, DbLoadResult, DbRollbackRequest, DbRollbackResult, DbVerifyRequest, DbVerifyResult, LoadRequest, LoadResponse,
+                             PipelineRunRequest, PipelineRunResponse)
 from src.connectors.base import ConnectorError
 from src.connectors.dialects import connector_for
 from src.services.db_loader_service import DbLoadError
@@ -111,7 +113,7 @@ def run_pipeline(
         dedup_config = body.dedup or _default_dedup(ctx, mapping_set_id, tax_columns, email_columns, phone_columns)
 
     run = ctx.executor.execute_run(
-        mapping_set_id, source, body.wave_name, dedup_config,
+        mapping_set_id, source, body.wave_name, dedup_config, exclusions=ctx.exclusions.rules(mapping_set_id),
         passthrough_columns=list(dict.fromkeys(
             body.passthrough_columns + _legacy_columns(ctx, mapping_set_id) + (key_columns if body.deduplicate and not body.dedup else []))) or None,
         lookup_fallback=LookupFallback(body.lookup_fallback), lookup_default=body.lookup_default,
@@ -188,6 +190,25 @@ def _validated_payload(ctx: AppContext, run_id: int) -> str:
     return validation.valid_path
 
 
+def _deliver_delta(ctx: AppContext, connector, run_id: int, valid_path: str, body: DbLoadRequest, schema: str, user: str) -> dict:
+    """mode=merge: apply this run's delta to the table that the baseline run delivered."""
+    if not body.baseline_run:
+        raise HTTPException(422, "merge needs baseline_run: the earlier run whose delivery this run updates")
+    table = connector.natural_case(body.table_name)
+    earlier = [d for d in ctx.db_loader.deliveries(ctx.run_dir(body.baseline_run))
+               if (d["connection"], d["schema"], d["table"]) == (body.connection, schema, table)]
+    if not earlier or earlier[-1].get("rolled_back"):
+        raise HTTPException(409, f"run {body.baseline_run} has no live delivery into {schema}.{table} on connection '{body.connection}', so there is nothing to merge into; "
+                                 "choose the run that delivered that table")
+    if bool(earlier[-1].get("include_source_columns")) != body.include_source_columns:
+        raise HTTPException(422, f"run {body.baseline_run} delivered {'with' if earlier[-1].get('include_source_columns') else 'without'} the raw legacy columns; "
+                                 "a merge must use the same setting")
+    report = delta_report(ctx, run_id, body.baseline_run)
+    return ctx.db_loader.deliver_merge(
+        connector, run_id, valid_path, report.delta_path, report.removed_path, body.baseline_run, ctx.run_dir(run_id), body.connection, schema, body.table_name, user,
+        include_source_columns=body.include_source_columns, delete_removed=body.delete_removed, batch_size=min(body.batch_size, 500), verify_values=body.verify_values)
+
+
 @router.get("/pipeline/load-db/{run_id}/preview", response_model=DbLoadPreview)
 def preview_db_load(run_id: int, connection: str, table_name: str, schema_name: Optional[str] = None, include_source_columns: bool = False,
                     ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user)) -> DbLoadPreview:
@@ -215,11 +236,42 @@ def load_run_into_database(run_id: int, body: DbLoadRequest, ctx: AppContext = D
         raise GateBlockedError(readiness)
     connector, schema = _target_connector(ctx, body.connection, body.schema_name)
     try:
-        record = ctx.db_loader.deliver(connector, run_id, valid_path, ctx.run_dir(run_id), body.connection, schema, body.table_name, body.mode, user,
-                                       include_source_columns=body.include_source_columns, batch_size=body.batch_size)
+        if body.mode == "merge":
+            record = _deliver_delta(ctx, connector, run_id, valid_path, body, schema, user)
+        else:
+            record = ctx.db_loader.deliver(connector, run_id, valid_path, ctx.run_dir(run_id), body.connection, schema, body.table_name, body.mode, user,
+                                           include_source_columns=body.include_source_columns, batch_size=body.batch_size, verify_values=body.verify_values)
     except DbLoadError as exc:
         raise HTTPException(422, str(exc)) from exc
     return DbLoadResult(schema_name=schema, **{k: v for k, v in record.items() if k != "schema"})
+
+
+@router.post("/pipeline/verify-db/{run_id}", response_model=DbVerifyResult)
+def verify_db_delivery(run_id: int, body: DbVerifyRequest, ctx: AppContext = Depends(get_ctx), user: str = Depends(require_connection_admin)) -> DbVerifyResult:
+    """Compare what a delivered table holds NOW with the run's validated payload, value by value (a content fingerprint per column).
+    Catches a table that was edited, truncated or partly deleted after the delivery, and names the columns that differ. Read-only on
+    the target; the result is stored with the delivery and shown on the reconciliation certificate."""
+    valid_path = _validated_payload(ctx, run_id)
+    connector, schema = _target_connector(ctx, body.connection, body.schema_name)
+    try:
+        result = ctx.db_loader.verify(connector, run_id, valid_path, ctx.run_dir(run_id), body.connection, schema, body.table_name, user)
+    except (ConnectorError, DbLoadError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return DbVerifyResult(schema_name=result.pop("schema"), **result)
+
+
+@router.post("/pipeline/rollback-db/{run_id}", response_model=DbRollbackResult)
+def rollback_db_delivery(run_id: int, body: DbRollbackRequest, ctx: AppContext = Depends(get_ctx), user: str = Depends(require_connection_admin)) -> DbRollbackResult:
+    """Undo a delivery into a database target: exactly the rows of this run are deleted (one transaction, counts checked before it is
+    committed) and the table is dropped when nothing else is left in it. Needs a reason. Refused when the table no longer holds the
+    rows that were delivered (someone changed it since). The rollback is recorded and shown on the reconciliation certificate. This
+    undoes DATABASE deliveries only: a load into SAP is reversed in SAP."""
+    connector, schema = _target_connector(ctx, body.connection, body.schema_name)
+    try:
+        result = ctx.db_loader.rollback(connector, run_id, ctx.run_dir(run_id), body.connection, schema, body.table_name, user, body.reason)
+    except DbLoadError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return DbRollbackResult(schema_name=result.pop("schema"), **result)
 
 
 @router.get("/pipeline/load-db/{run_id}", response_model=list[DbLoadResult])

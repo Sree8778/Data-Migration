@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Optional
+
+from fastapi import HTTPException
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -18,7 +21,7 @@ from src.api.schemas import (
     SourceColumnView,
 )
 from src.db.enums import TargetType
-from src.db.models import CatColumn, CatDataSource, CatTable, MapFieldRule, MapTableRule, MapValueLookup
+from src.db.models import CatColumn, CatDataSource, CatTable, MapFieldRule, MapTableRule, MapValueLookup, MigMigrationRun
 from src.schemas.profiler import ColumnProfile
 from src.services.metadata_service import NotFoundError
 from src.services.profiler_service import _mask_shape  # same shape mask as the catalog samples
@@ -182,8 +185,45 @@ def run_preflight(ctx: AppContext, mapping_set_id: int, sample_rows: int = 2000,
     unmapped = mapping_detail(ctx, mapping_set_id).unmapped_mandatory_targets
     report = ctx.preflight.check(
         mapping_set_id, ctx.source_file(source_table_id), sample_rows=sample_rows, block_rate=block_rate, warn_rate=warn_rate,
-        file_columns=ctx.file_columns(source_table_id), unmapped_mandatory=unmapped)
+        file_columns=ctx.file_columns(source_table_id), unmapped_mandatory=unmapped, exclusions=ctx.exclusions.rules(mapping_set_id))
     path = ctx.preflight_file(mapping_set_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(report.model_dump_json(indent=1), encoding="utf-8")
     return report
+
+
+# ------------------------------------------------------------------ delta between runs
+def baseline_for(ctx: AppContext, run_id: int, requested: Optional[int]) -> int:
+    """The run a delta is measured against: the one asked for, else the latest earlier run of the same mapping set that was validated."""
+    with ctx.session_factory() as s:
+        run = s.get(MigMigrationRun, run_id)
+        if run is None:
+            raise NotFoundError(f"migration run {run_id} does not exist")
+        if requested is not None:
+            if requested >= run_id:
+                raise HTTPException(422, "the baseline must be an earlier run")
+            if s.get(MigMigrationRun, requested) is None:
+                raise NotFoundError(f"migration run {requested} does not exist")
+            return requested
+        earlier = [r.id for r in s.scalars(select(MigMigrationRun).where(
+            MigMigrationRun.mapping_set_id == run.mapping_set_id, MigMigrationRun.id < run_id).order_by(MigMigrationRun.id.desc()))]
+    for candidate in earlier:
+        report = ctx.load_validation_report(candidate)
+        if report is not None and report.valid_path and Path(report.valid_path).is_file():
+            return candidate
+    raise HTTPException(409, f"no earlier validated run of mapping set {run.mapping_set_id} to compare run {run_id} with")
+
+
+def delta_report(ctx: AppContext, run_id: int, requested: Optional[int] = None):
+    """Compare run `run_id` with a baseline (the one asked for, else the latest earlier validated run of the same mapping set) and write
+    the records to deliver to the run folder. Raises HTTP errors a caller can pass on."""
+    baseline = baseline_for(ctx, run_id, requested)
+    current, before = ctx.load_validation_report(run_id), ctx.load_validation_report(baseline)
+    if current is None or not current.valid_path:
+        raise HTTPException(409, f"run {run_id} has no validated payload; run the pipeline first")
+    if before is None or not before.valid_path:
+        raise HTTPException(409, f"baseline run {baseline} has no validated payload")
+    with ctx.session_factory() as s:
+        sets = (s.get(MigMigrationRun, run_id).mapping_set_id, s.get(MigMigrationRun, baseline).mapping_set_id)
+    return ctx.delta.compute(run_id, sets[0], current.valid_path, baseline, sets[1], before.valid_path, ctx.run_dir(run_id) / "delta",
+                             rejected_path=current.rejected_path, duplicates_path=current.duplicates_path)

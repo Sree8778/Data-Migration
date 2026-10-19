@@ -10,11 +10,14 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select, text
 
 from src.api.context import AppContext
-from src.api.deps import get_ctx, require_user
-from src.api.schemas import HealthResponse, TargetKind, TargetsResponse, TargetTestRequest, TargetTestResult
+from src.api.deps import get_ctx, require_connection_admin, require_user
+from src.api.exceptions import NotConfiguredError
+from src.api.schemas import (HealthResponse, SapDiagnoseRequest, SapDiagnoseResult, SapDiagnosticOut, TargetKind, TargetsResponse, TargetTestRequest,
+                             TargetTestResult)
 from src.services.sap_client import SapAuthError, SapConfig, SapError
+from src.services.sap_diagnostics import SapDiagnostics, expected_odata_lengths
 from src.db.enums import TargetType
-from src.db.models import CatDataSource, CatTable
+from src.db.models import CatColumn, CatDataSource, CatTable
 from src.seeds.seed_sap_catalog import seed_sap_catalog
 
 router = APIRouter(tags=["admin"])
@@ -90,6 +93,27 @@ def test_target(body: TargetTestRequest, ctx: AppContext = Depends(get_ctx), use
         return TargetTestResult(target=body.target, ok=False, detail=f"credentials rejected: {exc}", latency_ms=ms())
     except SapError as exc:
         return TargetTestResult(target=body.target, ok=False, detail=str(exc), latency_ms=ms())
+
+
+@router.post("/targets/diagnose-sap", response_model=SapDiagnoseResult)
+def diagnose_sap(body: SapDiagnoseRequest = SapDiagnoseRequest(), ctx: AppContext = Depends(get_ctx),
+                 user: str = Depends(require_connection_admin)) -> SapDiagnoseResult:
+    """Everything that can be checked about the live SAP system before a load: the connection and credentials, the CSRF token and its session
+    cookie, the service's own $metadata against every field this application sends (and the field lengths against our validation), and read
+    access. With `write_test` it also creates ONE test partner (named so it can be archived), reads it back and sends an invalid payload to
+    see that SAP's rejection is understood. Credentials come from the server's environment and are never returned."""
+    config = SapConfig.from_env()
+    if config is None:
+        raise NotConfiguredError("live SAP is not configured on the server: set SAP_BASE_URL, SAP_USER and SAP_PASSWORD")
+    with ctx.session_factory() as s:
+        lengths = {f"{t}.{c}": n for t, c, n in s.execute(
+            select(CatTable.table_name, CatColumn.column_name, CatColumn.char_max_length).join(CatColumn, CatColumn.table_id == CatTable.id)
+            .join(CatDataSource, CatTable.source_id == CatDataSource.id)
+            .where(CatDataSource.target_type == TargetType.TARGET, CatTable.business_object == "BUSINESS_PARTNER"))}
+    diagnostics = SapDiagnostics(config, transport=ctx._sap_transport)
+    checks = diagnostics.run(write_test=body.write_test, expected_lengths=expected_odata_lengths(lengths), test_grouping=body.test_grouping)
+    return SapDiagnoseResult(ok=not any(c.status == "fail" for c in checks), wrote=any(c.name == "write_test" and c.status == "pass" for c in checks),
+                             checks=[SapDiagnosticOut(name=c.name, status=c.status, detail=c.detail, hint=c.hint) for c in checks])
 
 
 @router.post("/admin/seed-sap-catalog")

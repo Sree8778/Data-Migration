@@ -127,31 +127,41 @@ class SapConfig:
         )
 
 
+# The OData property each SAP field travels as, per entity of API_BUSINESS_PARTNER. Shared with the diagnostics, which checks every one of these
+# names against the target system's own $metadata before anything is loaded.
+GENERAL_FIELDS = {"TYPE": "BusinessPartnerCategory", "BU_GROUP": "BusinessPartnerGrouping", "NAME_ORG1": "OrganizationBPName1",
+                  "NAME_ORG2": "OrganizationBPName2", "BU_SORT1": "SearchTerm1"}
+ADDRESS_FIELDS = {"COUNTRY": "Country", "STREET": "StreetName", "HOUSE_NUM1": "HouseNumber", "CITY1": "CityName", "POST_CODE1": "PostalCode",
+                  "REGION": "Region", "LANGU": "Language"}
+COMPANY_FIELDS = {"BUKRS": "CompanyCode", "AKONT": "ReconciliationAccount", "ZTERM": "PaymentTerms", "ZWELS": "PaymentMethodsList"}
+SALES_FIELDS = {"VKORG": "SalesOrganization", "VTWEG": "DistributionChannel", "SPART": "Division", "WAERS": "Currency", "INCO1": "IncotermsClassification"}
+ROLE_FIELD = "BusinessPartnerRole"
+# entity set -> the OData properties we send to it (names as they appear in the service's $metadata)
+ENTITY_PROPERTIES = {
+    "A_BusinessPartner": sorted(GENERAL_FIELDS.values()),
+    "A_BusinessPartnerRole": [ROLE_FIELD],
+    "A_BusinessPartnerAddress": sorted(ADDRESS_FIELDS.values()),
+    "A_CustomerCompany": sorted(COMPANY_FIELDS.values()),
+    "A_CustomerSalesArea": sorted(SALES_FIELDS.values()),
+}
+
+
 def build_odata_payload(rec: BusinessPartnerRecord, external_id_field: Optional[str] = None) -> dict[str, Any]:
     """Deep-insert body for A_BusinessPartner (omits empty fields)."""
     def pick(source: Mapping[str, str], mapping: Mapping[str, str]) -> dict[str, str]:
         return {odata: source[k] for k, odata in mapping.items() if k in source}
 
-    body: dict[str, Any] = pick(rec.general, {
-        "TYPE": "BusinessPartnerCategory", "BU_GROUP": "BusinessPartnerGrouping",
-        "NAME_ORG1": "OrganizationBPName1", "NAME_ORG2": "OrganizationBPName2", "BU_SORT1": "SearchTerm1",
-    })
+    body: dict[str, Any] = pick(rec.general, GENERAL_FIELDS)
     if external_id_field and rec.bp_ext:
         body[external_id_field] = rec.bp_ext
-    body["to_BusinessPartnerRole"] = {"results": [{"BusinessPartnerRole": r} for r in rec.roles]}
+    body["to_BusinessPartnerRole"] = {"results": [{ROLE_FIELD: r} for r in rec.roles]}
     if rec.address:
-        body["to_BusinessPartnerAddress"] = {"results": [pick(rec.address, {
-            "COUNTRY": "Country", "STREET": "StreetName", "HOUSE_NUM1": "HouseNumber", "CITY1": "CityName",
-            "POST_CODE1": "PostalCode", "REGION": "Region", "LANGU": "Language"})]}
+        body["to_BusinessPartnerAddress"] = {"results": [pick(rec.address, ADDRESS_FIELDS)]}
     customer: dict[str, Any] = {}
     if rec.company_code:
-        customer["to_CustomerCompany"] = {"results": [pick(rec.company_code, {
-            "BUKRS": "CompanyCode", "AKONT": "ReconciliationAccount", "ZTERM": "PaymentTerms",
-            "ZWELS": "PaymentMethodsList"})]}
+        customer["to_CustomerCompany"] = {"results": [pick(rec.company_code, COMPANY_FIELDS)]}
     if rec.sales_area:
-        customer["to_CustomerSalesArea"] = {"results": [pick(rec.sales_area, {
-            "VKORG": "SalesOrganization", "VTWEG": "DistributionChannel", "SPART": "Division",
-            "WAERS": "Currency", "INCO1": "IncotermsClassification"})]}
+        customer["to_CustomerSalesArea"] = {"results": [pick(rec.sales_area, SALES_FIELDS)]}
     if customer:
         body["to_Customer"] = customer
     return body

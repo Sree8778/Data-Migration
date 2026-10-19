@@ -29,6 +29,24 @@
   <p class="muted">The model works through the columns one at a time, so this takes a while. The job keeps running on the server if you leave this page; come back to see it.</p>
 </div>
 <div id="preflight-panel" class="card hidden" aria-live="polite"></div>
+<details id="exclusions" class="card">
+  <summary><strong>Rows to leave out</strong> <span id="excl-summary" class="muted"></span></summary>
+  <p class="muted">Deleted, test and dummy records the business does not want in the new system. They are removed before the mapping runs, kept in a
+    separate file with the reason, and counted on the reconciliation certificate. Rules can only change while the mapping set is a draft.</p>
+  <div id="excl-rules"></div>
+  <div id="excl-suggest"></div>
+  <form id="excl-form" class="grid form">
+    <label>Column<select name="column" id="excl-column"></select></label>
+    <label>Rows where it
+      <select name="operator" id="excl-operator"><option value="equals">equals</option><option value="in">is one of (comma separated)</option>
+        <option value="is_blank">is blank</option><option value="starts_with">starts with</option><option value="contains">contains</option>
+        <option value="regex">matches the pattern</option></select></label>
+    <label>Value<input name="value" id="excl-value" autocomplete="off"></label>
+    <label class="wide">Reason (kept with the rule and shown on the certificate)<input name="reason" id="excl-reason" required minlength="3" maxlength="300"></label>
+    <div class="wide"><button class="btn" type="button" id="excl-check">Check how many rows</button>
+      <button class="btn primary" type="submit" id="excl-add">Leave these rows out</button> <span id="excl-preview" class="muted"></span></div>
+  </form>
+</details>
 <div id="add-rule" class="card hidden">
   <h2>Add manual rule</h2>
   <form id="add-rule-form" class="grid form">

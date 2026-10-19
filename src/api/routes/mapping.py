@@ -23,7 +23,10 @@ from src.api.schemas import (
     RuleUpdate,
 )
 from src.api.views import mapping_detail, mapping_summary, parse_reasoning, rule_detail, run_preflight
+from src.schemas.exclusion import (
+    ExclusionOverview, ExclusionRule, ExclusionRuleCount, ExclusionRuleInput, ExclusionSuggestion)
 from src.schemas.preflight import PreflightReport
+from src.services.row_exclusion import ExclusionError, apply_exclusions, preview_rule, suggest, validate_rule
 from src.db.enums import MappingStatus, RuleType, TargetType
 from src.db.models import CatColumn, CatDataSource, CatTable, MapFieldRule, MapTableRule
 from src.schemas.metadata import MappingSetCreate
@@ -167,6 +170,86 @@ def post_preflight(
     written to the run tables) and check the rules' structure. Every rule gets a measured pass rate; a lookup rule lists the legacy values
     it has no entry for. Works on any status, so an approver can re-check a submitted mapping."""
     return run_preflight(ctx, mapping_set_id, sample_rows, block_rate, warn_rate)
+
+
+# ------------------------------------------------------------------ rows to leave out
+def _exclusion_target(ctx: AppContext, mapping_set_id: int, must_edit: bool):
+    """(landed source file or None, editable?) for a mapping set; 409 when the rules may not change any more."""
+    with ctx.session_factory() as s:
+        mapping = s.get(MapTableRule, mapping_set_id)
+        if mapping is None:
+            raise NotFoundError(f"mapping set {mapping_set_id} does not exist")
+        status, table_id = mapping.status, mapping.source_table_id
+    editable = status == MappingStatus.DRAFT and not ctx.archive.get(mapping_set_id)
+    if must_edit and not editable:
+        raise HTTPException(409, f"mapping set {mapping_set_id} is {status.value}"
+                                 f"{' and archived' if ctx.archive.get(mapping_set_id) else ''}; only a DRAFT mapping set can change its exclusion rules")
+    return ctx.source_file(table_id), editable
+
+
+def _need_file(source):
+    if source is None:
+        raise HTTPException(409, "no source file is landed for this table, so a rule cannot be checked against its columns")
+    return source
+
+
+@router.get("/mapping/{mapping_set_id}/exclusions", response_model=ExclusionOverview)
+def list_exclusions(mapping_set_id: int, ctx: AppContext = Depends(get_ctx)) -> ExclusionOverview:
+    """The rows this mapping set leaves out of the migration, and how many each rule removes from the landed file."""
+    source, editable = _exclusion_target(ctx, mapping_set_id, False)
+    rules = ctx.exclusions.rules(mapping_set_id)
+    summary = None
+    if source is not None and rules:
+        try:
+            summary = apply_exclusions(source, rules)
+        except ExclusionError:  # a rule that no longer fits the file (column gone, or it would remove everything): the rules are still listed
+            summary = None
+    return ExclusionOverview(mapping_set_id=mapping_set_id, editable=editable, rules=rules, summary=summary)
+
+
+@router.get("/mapping/{mapping_set_id}/exclusions/suggestions", response_model=list[ExclusionSuggestion])
+def exclusion_suggestions(mapping_set_id: int, ctx: AppContext = Depends(get_ctx)) -> list[ExclusionSuggestion]:
+    """Rules the data points to (a set deletion flag, names that say TEST or DUMMY) that are not already in place. Nothing is applied."""
+    source, _ = _exclusion_target(ctx, mapping_set_id, False)
+    if source is None:
+        return []
+    have = {(r.column.lower(), r.operator, tuple(r.values)) for r in ctx.exclusions.rules(mapping_set_id)}
+    return [s for s in suggest(source) if (s.column.lower(), s.operator, tuple(s.values)) not in have]
+
+
+@router.post("/mapping/{mapping_set_id}/exclusions/preview", response_model=ExclusionRuleCount)
+def preview_exclusion(mapping_set_id: int, body: ExclusionRuleInput, ctx: AppContext = Depends(get_ctx)) -> ExclusionRuleCount:
+    """How many rows a rule would remove from the landed file, and a few examples, without saving it."""
+    source, _ = _exclusion_target(ctx, mapping_set_id, False)
+    return preview_rule(_need_file(source), body)
+
+
+@router.post("/mapping/{mapping_set_id}/exclusions", response_model=ExclusionRuleCount, status_code=201)
+def add_exclusion(
+    mapping_set_id: int, body: ExclusionRuleInput, ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user),
+) -> ExclusionRuleCount:
+    """Leave rows out of the migration. Needs a reason, a column that exists in the landed file, and a DRAFT mapping set; the rule,
+    its author and its reason travel with the run and appear on the reconciliation certificate. A rule set that would remove every
+    row is refused."""
+    source, _ = _exclusion_target(ctx, mapping_set_id, True)
+    source = _need_file(source)
+    column = validate_rule(source, body)
+    tentative = ExclusionRule(rule_id=10**6, column=column, operator=body.operator, values=body.values, reason=body.reason,
+                              ignore_case=body.ignore_case, created_by=user, created_at="")
+    apply_exclusions(source, [*ctx.exclusions.rules(mapping_set_id), tentative])  # raises when everything would go
+    created = ctx.exclusions.add(mapping_set_id, body, column, user)
+    counted = preview_rule(source, body)
+    return counted.model_copy(update={"rule_id": created.rule_id})
+
+
+@router.delete("/mapping/{mapping_set_id}/exclusions/{rule_id}")
+def delete_exclusion(mapping_set_id: int, rule_id: int, ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user)) -> dict:
+    _exclusion_target(ctx, mapping_set_id, True)
+    gone = ctx.exclusions.delete(mapping_set_id, rule_id)
+    if gone is None:
+        raise NotFoundError(f"mapping set {mapping_set_id} has no exclusion rule {rule_id}")
+    ctx.archive.log_rule_deletion(user, {"kind": "exclusion_rule", "mapping_set_id": mapping_set_id, "rule": gone.model_dump()})
+    return {"deleted": rule_id, "mapping_set_id": mapping_set_id}
 
 
 @router.get("/mapping/{mapping_set_id}", response_model=MappingDetail)
