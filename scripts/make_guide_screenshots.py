@@ -583,7 +583,7 @@ def stage_assistant(g: Shooter, page: Page) -> None:
     gf = open_governance(page)
     gf.locator("#ask-question").fill("Which records were left out, and why?")
     gf.locator("#ask-go").click()
-    for _ in range(120):                                  # the answer replaces the "Looking it up" note
+    for _ in range(900):                                  # the answer replaces the "Looking it up" note
         text = gf.locator("#ask-result").inner_text()
         if text.strip() and "Looking it up" not in text:
             break
@@ -604,7 +604,128 @@ def stage_rollback(g: Shooter, page: Page) -> None:
     g.shot(page, "58_rolled_back")
 
 
-STAGES = {"import": stage_import, "quality": stage_quality, "ai": stage_ai, "manual": stage_manual, "preflight": stage_preflight, "run": stage_run, "fix": stage_fix, "v2": stage_v2, "run2": stage_run2, "gate2": stage_gate2, "dups": stage_dups, "signoff": stage_signoff, "target": stage_target,
+def land_small(system: str, table: str, header: list[str], rows: list[list[str]], key: str) -> int:
+    """A small extra table (payment terms, contacts) through the same upload the wizard uses, so Combine has something to join."""
+    import csv
+    import io
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(header)
+    w.writerows(rows)
+    r = api.post("/sources/register", data={"system_name": system, "table_name": table, "primary_key_columns": key}, files={"file": (f"{table}.csv", buf.getvalue().encode())})
+    assert r.status_code == 201, r.text
+    return r.json()["table_id"]
+
+
+def stage_more(g: Shooter, page: Page) -> None:
+    """The pages the story does not need: Sources, the database/cloud wizard, the Setup guide, Combine, Packs, the key dialog, the menus."""
+    tables = {t["table_name"]: t["table_id"] for t in api.get("/tables").json()}
+    customers = tables[TABLE]
+    terms = land_small(SYSTEM, "PAYMENT_TERMS_LOOKUP", ["CODE", "TEXT"], [["Net 30", "Net 30 days"], ["Net 60", "Net 60 days"], ["COD", "Cash on delivery"]], "CODE")
+    import csv
+    first = list(csv.DictReader(open(CSV, newline="", encoding="utf-8")))[:60]
+    contacts = land_small(SYSTEM, "CONTACTS", ["CONTACT_ID", "CUST_ID", "CONTACT"], [[f"K{i}_{n}", r["CUST_ID"], f"Contact {i}.{n}"] for i, r in enumerate(first) for n in range(1 + i % 2)], "CONTACT_ID")
+
+    page.goto(BASE + "/")
+    page.locator("#tree .node").first.wait_for()
+    settle(page, 1500)
+    page.get_by_role("button", name="Sources", exact=True).click()
+    page.locator("#tabstrip .tab", has_text="Sources & Runs").wait_for()
+    settle(page, 2500)
+    g.shot(page, "60_sources")
+
+    # ---- the wizard for a database / cloud source (nothing is connected: the pictures show the questions it asks)
+    page.get_by_role("button", name="New Source").click()
+    page.locator("#wizard[open]").wait_for()
+    page.fill("#s-name", "LEGACY_DOCS")
+    page.select_option("#s-kind", "mongodb")
+    settle(page, 700)
+    g.shot(page, "61_wizard_kinds")
+    page.locator("#wz-next").click()
+    settle(page, 900)
+    g.shot(page, "62_wizard_mongodb")
+    for name in ("Setup guide", "Guide helper", "Guide"):
+        btn = page.get_by_role("button", name=name)
+        if btn.count():
+            btn.first.click()
+            settle(page, 1500)
+            g.shot(page, "63_setup_guide")
+            break
+    page.keyboard.press("Escape")
+    settle(page, 500)
+    if page.locator("#wizard[open]").count():
+        page.evaluate("() => document.querySelector('#wizard').close()")
+
+    # ---- Combine
+    page.get_by_role("button", name="Combine", exact=True).click()
+    page.locator("#tabstrip .tab", has_text="Combine").wait_for()
+    cf = frame(page)
+    cf.locator("#base-table option").first.wait_for(state="attached")
+    cf.locator("#base-table").select_option(str(customers))
+    cf.locator("#add-join").click()
+    card = cf.locator("[data-join='0']")
+    card.locator('select[data-f="table"]').select_option(str(terms))
+    card.locator('select[data-f="left"]').select_option("a.PAYMENT_TERMS")
+    card.locator('select[data-f="right"]').select_option("b.CODE")
+    settle(page, 700)
+    g.shot(page, "64_combine_setup")
+    cf.locator("#preview").click()
+    cf.locator("#result .cards").wait_for(timeout=60000)
+    settle(page, 1200)
+    cf.locator("#result").evaluate("el => el.scrollIntoView({block: 'start'})")
+    settle(page, 500)
+    g.shot(page, "65_combine_preview")
+    cf.locator("#c-table").fill("CUSTOMER_WITH_TERMS")
+    cf.locator("#c-keys").fill("CUST_ID")
+    cf.locator("#create").click()
+    cf.locator("#created .banner").wait_for(timeout=120000)
+    settle(page, 1200)
+    cf.locator("#created").evaluate("el => el.scrollIntoView({block: 'center'})")
+    g.shot(page, "66_combine_created")
+    cf.locator('[data-join="0"] [data-act="del-join"]').click()                 # the refusal: contacts would repeat customers
+    cf.locator("#add-join").click()
+    card = cf.locator("[data-join='0']")
+    card.locator('select[data-f="table"]').select_option(str(contacts))
+    card.locator('select[data-f="left"]').select_option("a.CUST_ID")
+    card.locator('select[data-f="right"]').select_option("b.CUST_ID")
+    cf.locator("#preview").click()
+    cf.locator("#result .banner.red").wait_for(timeout=60000)
+    settle(page, 900)
+    cf.locator("#result").evaluate("el => el.scrollIntoView({block: 'start'})")
+    g.shot(page, "67_combine_blocked")
+
+    # ---- Packs
+    page.get_by_role("button", name="Packs", exact=True).click()
+    page.locator("#tabstrip .tab", has_text="Content Packs").wait_for()
+    pf = frame(page)
+    pf.locator("#x-id").fill(str(MAPPING_ID))
+    pf.locator("#x-name").fill("Customer move - approved rules")
+    settle(page, 700)
+    g.shot(page, "68_packs_export")
+    pack = ROOT / "docs" / "user-manual" / "_pack.json"
+    pack.write_text(api.get(f"/packs/export/{MAPPING_ID}").text, encoding="utf-8")
+    pf.locator("#i-table").fill(str(customers))
+    pf.locator("#i-file").set_input_files(str(pack))
+    pf.locator("#import").click()
+    pf.locator("#result > *").first.wait_for(timeout=60000)
+    settle(page, 1500)
+    g.shot(page, "69_packs_dry_run")
+    pack.unlink(missing_ok=True)
+
+    # ---- the key dialog and the menus
+    page.get_by_role("button", name="Keys", exact=True).click()
+    page.locator("#key-modal[open]").wait_for()
+    settle(page, 900)
+    g.shot(page, "70_keys")
+    page.keyboard.press("Escape")
+    settle(page, 500)
+    page.get_by_role("menuitem", name="Window").click()
+    settle(page, 700)
+    g.shot(page, "71_window_menu")
+    page.keyboard.press("Escape")
+
+
+STAGES = {"more": stage_more, "import": stage_import, "quality": stage_quality, "ai": stage_ai, "manual": stage_manual, "preflight": stage_preflight, "run": stage_run, "fix": stage_fix, "v2": stage_v2, "run2": stage_run2, "gate2": stage_gate2, "dups": stage_dups, "signoff": stage_signoff, "target": stage_target,
           "deliver": stage_deliver, "cert": stage_cert, "extras": stage_extras, "assistant": stage_assistant, "rollback": stage_rollback}
 
 if __name__ == "__main__":

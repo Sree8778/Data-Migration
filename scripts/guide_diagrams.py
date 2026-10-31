@@ -250,7 +250,117 @@ def delivery() -> str:
     return c.svg()
 
 
-ALL = {"big_picture": big_picture, "landing": landing, "rule_types": rule_types, "run_pipeline": run_pipeline, "duplicates": duplicates, "roles_and_gate": roles_and_gate, "delivery": delivery}
+# ====================================================================== 8. architecture (the manual)
+def architecture() -> str:
+    c = Chart(1000, 440, "Where the data comes from, what the application does with it, and where it goes")
+    c.band(10, 10, 250, 420, "SOURCES (read only)")
+    c.band(285, 10, 440, 420, "THE APPLICATION (one server)")
+    c.band(750, 10, 240, 420, "TARGETS AND EVIDENCE")
+    for i, (key, text) in enumerate([("f", "Files\nCSV · Excel · JSON ·\nfixed-width · Parquet"), ("d", "Databases\nOracle · SQL Server ·\nPostgreSQL · MySQL"),
+                                     ("o", "Document stores\nFirestore · MongoDB"), ("s", "Cloud storage\nAzure Blob · S3 · SFTP")]):
+        c.box(key, 30, 45 + i * 92, 210, 74, text, "world", 14)
+    c.box("land", 305, 45, 190, 74, "Landing\nlocked snapshot, row count\nand fingerprint", "good", 14)
+    c.box("cat", 515, 45, 190, 74, "Catalogue (PostgreSQL)\nmappings, runs, approvals,\naudit log", "step", 14)
+    c.box("work", 305, 160, 400, 100, "The work steps\nprofile · quality · mapping · exclusions · approval ·\nrun · gate · sign-off · deliver · certificate", "step", 15)
+    c.box("help", 305, 300, 400, 100, "Helpers\nAI mapping (Gemini online or a local model) ·\nAssistant (answers from the run's own records) · Setup guide", "ai", 14)
+    for k in ("f", "d", "o", "s"):
+        c.arrow(k, "right", "land", "left")
+    c.arrow("land", "bottom", "work", "top"); c.arrow("cat", "bottom", "work", "top")
+    c.arrow("help", "top", "work", "bottom", "", "#7a4fd1", dash=True)
+    c.box("sap", 770, 45, 200, 74, "SAP S/4HANA\nBusiness Partner (OData)", "world", 14)
+    c.box("db", 770, 137, 200, 74, "A database\nPostgreSQL · SQL Server ·\nOracle · MySQL · Firestore", "world", 14)
+    c.box("ev", 770, 229, 200, 74, "Evidence\ncertificate · audit log ·\ndelivery history", "good", 14)
+    c.box("pk", 770, 321, 200, 74, "Content packs\napproved rules to reuse\n(no customer values)", "step", 14)
+    for k in ("sap", "db", "ev", "pk"):
+        c.arrow("work", "right", k, "left")
+    return c.svg()
+
+
+# ====================================================================== 9. AI mapping
+def ai_mapping() -> str:
+    c = Chart(1000, 330, "How the AI proposes rules, and who checks them")
+    c.box("col", 20, 30, 170, 80, "Legacy column\nCUST_NM, FIRMENNAME …", "world")
+    c.box("find", 230, 30, 200, 80, "1. Find candidates\nsearch the SAP catalogue\nby meaning: keep 8", "step")
+    c.box("ai", 470, 30, 200, 80, "2. The AI chooses\nonly among the 8; writes\na rule + a short reason", "ai")
+    c.box("chk", 710, 30, 270, 80, "3. Safety checks\nSQL parsed; only allowed functions;\nrisky rules marked NEEDS REVIEW", "step", 14)
+    c.arrow("col", "right", "find", "left"); c.arrow("find", "right", "ai", "left"); c.arrow("ai", "right", "chk", "left")
+    c.box("rev", 710, 200, 270, 80, "4. A person reviews\nkeeps, edits or deletes\neach proposed rule", "person")
+    c.arrow("chk", "bottom", "rev", "top")
+    c.box("sub", 470, 200, 200, 80, "5. Submit for approval\nthe author presses it", "step")
+    c.box("app", 230, 200, 200, 80, "6. A second person\napproves: rules locked", "person")
+    c.box("go", 20, 200, 170, 80, "Ready to run", "good")
+    c.arrow("rev", "left", "sub", "right"); c.arrow("sub", "left", "app", "right"); c.arrow("app", "left", "go", "right", "", G)
+    c.label(500, 312, "Nothing the AI writes takes effect until a person has read it and a second person has approved it.", 13, "#4a5565")
+    return c.svg()
+
+
+# ====================================================================== 10. life of a mapping set
+def mapping_lifecycle() -> str:
+    c = Chart(1000, 300, "The life of a set of rules (a mapping set)")
+    c.box("dr", 20, 50, 190, 80, "DRAFT\nanyone may edit", "step")
+    c.box("su", 270, 50, 190, 80, "SUBMITTED\nwaiting for a second person", "person", 14)
+    c.box("ap", 520, 50, 190, 80, "APPROVED\nlocked: cannot be edited", "good")
+    c.box("ru", 770, 50, 210, 80, "RUNS\nuse exactly these rules", "step")
+    c.arrow("dr", "right", "su", "left", "submit"); c.arrow("su", "right", "ap", "left", "approve"); c.arrow("ap", "right", "ru", "left")
+    c.box("cp", 520, 190, 190, 70, "New editable copy\nversion + 1", "bad")
+    c.arrow("ap", "bottom", "cp", "top", "needs a change?", R, lx=56)
+    c.path("M520,225 L115,225 L115,130", "back to draft", 300, 217, R)
+    c.label(500, 285, "The person who submitted can never approve; the approver can never be the author.", 13, "#4a5565")
+    return c.svg()
+
+
+# ====================================================================== 11. combine tables
+def combine_flow() -> str:
+    c = Chart(1000, 400, "Combining tables: preview first, refuse silent duplicates")
+    c.box("a", 20, 30, 200, 76, "1. First table\nevery record is kept", "step")
+    c.box("b", 260, 30, 220, 76, "2. Add tables to join\nmatch columns, ignoring\nblanks and upper/lower case", "step", 14)
+    c.box("f", 520, 30, 200, 76, "3. Filters (optional)\nkeep records where …", "step")
+    c.box("p", 760, 30, 220, 76, "4. Preview on my data\nnothing is written yet", "step")
+    c.arrow("a", "right", "b", "left"); c.arrow("b", "right", "f", "left"); c.arrow("f", "right", "p", "left")
+    c.diamond("q", 870, 215, 230, 110, "Would any record\nrepeat?", "person")
+    c.arrow("p", "bottom", "q", "top")
+    c.box("no", 470, 175, 240, 80, "Refused\nnothing is created: change the\njoin, or allow repeats on purpose", "bad", 14)
+    c.arrow("q", "left", "no", "right", "yes", R)
+    c.box("cr", 700, 310, 280, 70, "5. Create the table\nname, system and key columns", "good")
+    c.arrow("q", "bottom", "cr", "top", "no", G)
+    c.box("use", 380, 310, 260, 70, "A new source table\nprofile, map and run it as usual", "world", 14)
+    c.arrow("cr", "left", "use", "right")
+    return c.svg()
+
+
+# ====================================================================== 12. content packs
+def packs_flow() -> str:
+    c = Chart(1000, 300, "Reusing approved rules in the next migration with a content pack")
+    c.box("m", 20, 40, 190, 80, "Approved mapping set\nfrom this migration", "good")
+    c.box("e", 250, 40, 210, 80, "Export the pack\nrules, lookup tables,\nleave-out rules", "step")
+    c.box("j", 500, 40, 200, 80, "pack.json\nno customer values\ninside", "world")
+    c.box("i", 740, 40, 240, 80, "Import into a new table\ndry run first: shows what\nwould fit, writes nothing", "step", 14)
+    c.arrow("m", "right", "e", "left"); c.arrow("e", "right", "j", "left"); c.arrow("j", "right", "i", "left")
+    c.box("d", 740, 180, 240, 80, "A DRAFT mapping set\nrules whose columns are\nmissing are listed", "step", 14)
+    c.box("a", 470, 180, 220, 80, "A different person\nreviews and approves", "person")
+    c.box("r", 230, 180, 190, 80, "Run as usual", "good")
+    c.arrow("i", "bottom", "d", "top"); c.arrow("d", "left", "a", "right"); c.arrow("a", "left", "r", "right", "", G)
+    return c.svg()
+
+
+# ====================================================================== 13. what to do when the gate blocks
+def gate_decision() -> str:
+    c = Chart(1000, 425, "The gate is blocked: which remedy fits which defect")
+    c.box("g", 20, 165, 170, 80, "Gate: BLOCKED\ndefects were found", "bad")
+    c.diamond("q", 320, 205, 200, 110, "What kind of\ndefect is it?", "person")
+    c.arrow("g", "right", "q", "left")
+    c.box("b1", 470, 30, 260, 80, "Wrong or missing value\nchange the rule, or add the\nvalue to the lookup", "step", 14)
+    c.box("b2", 470, 165, 260, 80, "A record that must not move\nleave it out, with a reason\n(the reason is recorded)", "person", 14)
+    c.box("b3", 470, 300, 260, 80, "Twin records\nreview the proposed merges\nand keep one survivor", "step", 14)
+    c.arrow("q", "top", "b1", "left", via="v"); c.arrow("q", "right", "b2", "left"); c.arrow("q", "bottom", "b3", "left", via="v")
+    c.box("e", 780, 165, 200, 80, "New version\nsubmit · approve ·\nrun again", "step")
+    c.arrow("b1", "right", "e", "top", via="h"); c.arrow("b2", "right", "e", "left"); c.arrow("b3", "right", "e", "bottom", via="h")
+    c.label(500, 408, "Repeat until the gate shows READY, then a person signs off.", 13, "#4a5565")
+    return c.svg()
+
+
+ALL = {"big_picture": big_picture, "landing": landing, "rule_types": rule_types, "run_pipeline": run_pipeline, "duplicates": duplicates, "roles_and_gate": roles_and_gate, "delivery": delivery,
+       "architecture": architecture, "ai_mapping": ai_mapping, "mapping_lifecycle": mapping_lifecycle, "combine_flow": combine_flow, "packs_flow": packs_flow, "gate_decision": gate_decision}
 
 if __name__ == "__main__":  # write each chart as a stand-alone file to look at it
     from pathlib import Path
