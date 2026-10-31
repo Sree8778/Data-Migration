@@ -47,6 +47,70 @@ _NEEDS_REVIEW = re.compile(r"^\[NEEDS_REVIEW\]")
 _ALIAS_MODEL = re.compile(r"(^|[-:])latest\b")
 
 
+# What to do about each kind of finding: (the next step in plain words, the Mapping Studio button that does it).
+ADVICE: dict[str, tuple[str, str]] = {
+    "NO_RULES": ("Press 'Generate AI mapping' to get a first proposal, or 'Add manual rule' to write the rules yourself.", "generate"),
+    "EMPTY_LOOKUP": ("Open this rule and press 'Draft lookups with AI': it reads the values in your file, proposes the SAP key for each and you tick what you approve. "
+                     "If the values are already SAP keys, change the rule type to DIRECT_COPY instead.", "draft_lookups"),
+    "SOURCE_MISSING": ("The landed file no longer has this column. Re-import the table, or edit the rule to read another column, or delete it.", "edit_rule"),
+    "REVIEW_PENDING": ("Open each flagged rule, read the AI's reasoning, correct it if needed and tick 'Confirm as reviewed'. A mapping can be submitted without this, "
+                       "but the approver will see that it is unreviewed.", "review_rules"),
+    "MANDATORY_UNMAPPED": ("Press 'Add placeholders for missing mandatory fields', then supply the values in Data Construction. A field that is the same for every record "
+                           "(an account group, a category) is quicker as a STATIC_VALUE rule such as 'Z001'.", "add_placeholders"),
+    "UNPINNED_MODEL": ("Optional: set GEMINI_MODEL (or OLLAMA_MODEL) to a versioned model name in the server settings and generate again, so a re-run gives the same mapping. "
+                       "Nothing to do now to submit.", "none"),
+    "NOT_SAMPLED": ("Import the table first (New Source), then press 'Check rules on sample' again.", "reimport"),
+    "DRY_RUN_FAILED": ("Read the message: it names the rule or expression that cannot run. Open that rule and correct or delete it, then check again.", "edit_rule"),
+    "AWAITING_CONSTRUCTION": ("Supply these values in the Data Construction tab of the Governance page, or replace the placeholder with a rule if the legacy data has them.", "add_placeholders"),
+    "LOW_YIELD": ("This follows from the other problems: fix those first, then press 'Check rules on sample' again and the share should rise.", "none"),
+}
+
+_BY_KIND: dict[str, tuple[str, str]] = {
+    "LOOKUP_FAILED": ("The lookup does not know many of the legacy values. Open the rule: the values it misses are listed on it. Press 'Draft lookups with AI' to propose the "
+                      "SAP key for each and approve them.", "draft_lookups"),
+    "MANDATORY": ("The SAP field is mandatory but the value is blank in these rows. Map another column that holds it, give the rule a default "
+                  "(for example COALESCE(NULLIF(TRIM(col), ''), 'default')), or supply it in Data Construction.", "edit_rule"),
+    "LENGTH": ("The values are longer than the SAP field allows, and SAP would cut or refuse them. Shorten them in the rule, for example LEFT(TRIM(col), N) with N the field length, "
+               "or correct the source.", "edit_rule"),
+    "CONVERSION": ("The values have the wrong type or contain control characters. Edit the rule to clean them (TRIM, REPLACE, a date format) or correct the source.", "edit_rule"),
+    "CHECKTABLE": ("The values are not valid SAP keys for this field. Change the rule type to VALUE_MAPPING and press 'Draft lookups with AI', or correct the codes in the source.", "edit_rule"),
+    "FORMAT": ("The values do not have the shape SAP expects (an e-mail address, an IBAN). Clean them in the rule or correct the source.", "edit_rule"),
+}
+
+
+def _failure_advice(check: RuleCheck, rule: dict, partial: bool = False) -> tuple[str, str]:
+    """The next step for a rule that fails rows: decided by the kind of failure that most rows have."""
+    kind = max(check.failure_kinds, key=check.failure_kinds.get) if check.failure_kinds else None
+    step, action = _BY_KIND.get(kind, ("Open the rule and compare its result with the legacy values.", "edit_rule"))
+    if action == "draft_lookups" and rule["rule_type"] != RuleType.VALUE_MAPPING.value:
+        step, action = _BY_KIND["CHECKTABLE"]
+    if partial:
+        step += " The failing rows become defects after the run, and the mapping can still be submitted."
+    return step, action
+
+
+def _next_steps(findings: list[PreflightFinding], blockers: int) -> list[str]:
+    """The whole way to a submitted mapping, in order, for someone who does not know the screen."""
+    steps: list[str] = []
+    if blockers:
+        steps.append(f"Fix the {blockers} problem(s) marked BLOCKER. Each one says what to do and has a button that opens the right place.")
+        seen: set[tuple[str, str]] = set()
+        for f in findings:
+            if f.severity != FindingSeverity.BLOCKER or not f.next_step:
+                continue
+            key = (f.target or "", f.action)
+            if key in seen:
+                continue
+            seen.add(key)
+            steps.append(f"{f.target or 'Mapping'}: {f.next_step}")
+        steps.append("Press 'Check rules on sample' again to confirm that the blockers are gone.")
+    elif any(f.severity == FindingSeverity.WARNING and f.action != "none" for f in findings):
+        steps.append("Optional: deal with the warnings below first (each says what to do); none of them stops the submission.")
+    steps.append("Press 'Submit for approval'. A different person must approve it: the person who built the mapping cannot.")
+    steps.append("After the approval press 'Run pipeline'; the defects it finds appear on the Governance page with what to do about each.")
+    return steps
+
+
 class MappingPreflightService:
     def __init__(
         self,
@@ -74,6 +138,7 @@ class MappingPreflightService:
         file_columns: Optional[set[str]] = None,
         unmapped_mandatory: Optional[list[str]] = None,
         exclusions: Optional[list[ExclusionRule]] = None,
+        destination: Optional[dict] = None,
     ) -> PreflightReport:
         """`file_columns`: lower-cased columns of the landed file, to catch rules that read a column the file no longer has."""
         rules = self._load_rules(mapping_set_id)
@@ -83,9 +148,12 @@ class MappingPreflightService:
             for r in rules
         }
 
-        def add(severity: FindingSeverity, code: str, message: str, rule: Optional[dict] = None) -> None:
-            findings.append(PreflightFinding(severity=severity, code=code, message=message,
-                                             rule_id=rule["rule_id"] if rule else None, target=rule["target"] if rule else None))
+        def add(severity: FindingSeverity, code: str, message: str, rule: Optional[dict] = None, advice: Optional[tuple[str, str]] = None,
+                rule_ids: Optional[list[int]] = None) -> None:
+            step, action = advice or ADVICE.get(code, ("", "none"))
+            findings.append(PreflightFinding(severity=severity, code=code, message=message, rule_id=rule["rule_id"] if rule else None,
+                                             target=rule["target"] if rule else None, next_step=step, action=action,
+                                             rule_ids=rule_ids if rule_ids is not None else ([rule["rule_id"]] if rule else [])))
             if rule and severity == FindingSeverity.BLOCKER:
                 checks[rule["rule_id"]].verdict = "BLOCKER"
             elif rule and checks[rule["rule_id"]].verdict == "OK":
@@ -105,7 +173,8 @@ class MappingPreflightService:
         pending = [r for r in rules if r["needs_review"]]
         if pending:
             add(FindingSeverity.WARNING, "REVIEW_PENDING",
-                f"{len(pending)} rule(s) are flagged for review and nobody has confirmed them yet: " + ", ".join(r["target"] for r in pending[:6]) + ("..." if len(pending) > 6 else ""))
+                f"{len(pending)} rule(s) are flagged for review and nobody has confirmed them yet: " + ", ".join(r["target"] for r in pending[:6]) + ("..." if len(pending) > 6 else ""),
+                rule_ids=[r["rule_id"] for r in pending])
         if unmapped_mandatory:
             add(FindingSeverity.WARNING, "MANDATORY_UNMAPPED",
                 f"{len(unmapped_mandatory)} mandatory SAP field(s) have no rule and will be empty (Data Construction can supply them): "
@@ -116,6 +185,13 @@ class MappingPreflightService:
             add(FindingSeverity.WARNING, "UNPINNED_MODEL",
                 f"the mapping came from the model alias '{alias[0].split(' -> ')[0]}', which its vendor can repoint at a different model; "
                 "set GEMINI_MODEL / OLLAMA_MODEL to a versioned name so a re-run gives the same mapping")
+
+        # ---- the destination's own rules (the key becomes a document ID, a quota, ...): a problem here blocks the submission like any other
+        if destination:
+            for c in destination["checks"]:
+                if c["level"] in ("block", "warn"):
+                    add(FindingSeverity.BLOCKER if c["level"] == "block" else FindingSeverity.WARNING, c["code"], f"Destination {destination['label']}: {c['message']}",
+                        advice=(c.get("next_step", ""), "none"))
 
         # ---- dry run on a sample of the real rows
         sampled, sample_n, source_rows, valid_rate = False, 0, None, None
@@ -137,21 +213,24 @@ class MappingPreflightService:
                             f"{r['target']} is a placeholder: {rate:.0%} of the sampled rows still need a value from Data Construction", r)
                     elif rate >= block_rate:
                         add(FindingSeverity.BLOCKER, "MOSTLY_FAILING",
-                            f"{r['target']} fails {rate:.0%} of the {c.sampled:,} sampled rows ({_kinds(c)}): fix the rule before submitting", r)
+                            f"{r['target']} fails {rate:.0%} of the {c.sampled:,} sampled rows ({_kinds(c)}): fix the rule before submitting", r, _failure_advice(c, r))
                     elif rate >= warn_rate:
-                        add(FindingSeverity.WARNING, "PARTIAL_FAILING", f"{r['target']} fails {rate:.0%} of the {c.sampled:,} sampled rows ({_kinds(c)})", r)
+                        add(FindingSeverity.WARNING, "PARTIAL_FAILING", f"{r['target']} fails {rate:.0%} of the {c.sampled:,} sampled rows ({_kinds(c)})", r,
+                            _failure_advice(c, r, partial=True))
             if valid_rate is not None and valid_rate < block_rate:
                 waiting = any(r["placeholder"] for r in rules)  # placeholder rules fail by design, so a low yield is expected until they are filled
                 add(FindingSeverity.WARNING if waiting else FindingSeverity.BLOCKER, "LOW_YIELD",
                     f"only {valid_rate:.0%} of the sampled rows pass validation" + (" (placeholder rules are still empty)" if waiting else ""))
 
         blockers = sum(1 for f in findings if f.severity == FindingSeverity.BLOCKER)
+        findings = sorted(findings, key=lambda f: (f.severity != FindingSeverity.BLOCKER, f.code))
         return PreflightReport(
+            next_steps=_next_steps(findings, blockers),
             mapping_set_id=mapping_set_id, checked_at=datetime.now(timezone.utc), sampled=sampled, sample_requested=sample_rows,
             sample_rows=sample_n, source_rows=source_rows, valid_rate=valid_rate, block_rate=block_rate, warn_rate=warn_rate,
             can_submit=blockers == 0, blockers=blockers, warnings=len(findings) - blockers,
-            findings=sorted(findings, key=lambda f: (f.severity != FindingSeverity.BLOCKER, f.code)),
-            rules=list(checks.values()), models=models, exclusion_rules=[r.rule_id for r in exclusions or []])
+            findings=findings,
+            rules=list(checks.values()), models=models, exclusion_rules=[r.rule_id for r in exclusions or []], destination=destination)
 
     # ------------------------------------------------------------------ the rules
     def _load_rules(self, mapping_set_id: int) -> list[dict]:

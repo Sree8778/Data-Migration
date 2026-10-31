@@ -20,9 +20,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from src.api.context import AppContext
-from src.api.deps import identify
+from src.api import security
 from src.api.errors import register_error_handlers
-from src.api.routes import admin, audit, connections, construction, governance, keys, mapping, pipeline, sources
+from src.api.routes import admin, assistant, audit, combine, compliance, connections, construction, duplicates, fix, governance, guide, insight, keys, mapping, mapping_target, packs, pipeline, quality, sources, tasks
 from src.api.settings import Settings
 from src.db.session import create_db_engine, create_session_factory
 from src.seeds.seed_sap_catalog import seed_sap_catalog
@@ -35,6 +35,13 @@ PAGES = {
     "/": ("console.html", "Management Center"),
     "/ui/start": ("start.html", "Start Page"),
     "/ui/sources": ("index.html", "Sources & Runs"),
+    "/ui/combine": ("combine.html", "Combine Tables"),
+    "/ui/dashboard": ("dashboard.html", "Programme Dashboard"),
+    "/ui/compliance": ("compliance.html", "Compliance"),
+    "/ui/quality/{table_id}": ("quality.html", "Data Quality"),
+    "/ui/duplicates/{run_id}": ("duplicates.html", "Duplicate Review"),
+    "/ui/tasks": ("tasks.html", "Stewardship Tasks"),
+    "/ui/packs": ("packs.html", "Content Packs"),
     "/ui/profiler/{table_id}": ("profiler.html", "Table Profiler"),
     "/ui/studio/{table_id}": ("studio.html", "Mapping Studio"),
     "/ui/governance/{run_id}": ("governance.html", "Defect & Governance Hub"),
@@ -47,6 +54,8 @@ def create_app(ctx: Optional[AppContext] = None, settings: Optional[Settings] = 
         settings = settings or Settings.from_env()
         ctx = AppContext(settings, create_session_factory(create_db_engine()))
     settings = ctx.settings
+    if settings.require_auth and not settings.api_keys:
+        raise RuntimeError("MIGRATION_REQUIRE_AUTH is set but MIGRATION_API_KEYS is not: refusing to start without authentication")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -56,7 +65,21 @@ def create_app(ctx: Optional[AppContext] = None, settings: Optional[Settings] = 
             except Exception as exc:  # noqa: BLE001
                 import logging
                 logging.getLogger("migration.api").warning("catalog seeding skipped: %s", exc)
+        if not settings.api_keys:
+            import logging
+            logging.getLogger("migration.api").warning(
+                "AUTHENTICATION IS OFF (dev-header mode): any caller can name itself in the X-User header, approvers included. "
+                "Set MIGRATION_API_KEYS (and MIGRATION_REQUIRE_AUTH=true) on any shared server.")
+        try:
+            for run_id in ctx.executor.fail_interrupted_runs():
+                import logging
+                logging.getLogger("migration.api").warning("run %s was still RUNNING when the server started; marked FAILED (interrupted)", run_id)
+        except Exception as exc:  # noqa: BLE001 - never stop the server from starting
+            import logging
+            logging.getLogger("migration.api").warning("could not check for interrupted runs: %s", exc)
+        ctx.start_maintenance()
         yield
+        ctx.stop_maintenance()
         ctx.jobs.shutdown()
 
     app = FastAPI(
@@ -65,11 +88,12 @@ def create_app(ctx: Optional[AppContext] = None, settings: Optional[Settings] = 
                     "govern, load and reconcile.")
     app.state.ctx = ctx
     register_error_handlers(app)
+    security.install(app, ctx)   # request id, throttling, size cap, audit trail, response headers
 
     app.add_middleware(
         CORSMiddleware, allow_origins=list(settings.cors_origins), allow_credentials=False,
-        allow_methods=["GET", "POST", "PUT", "OPTIONS"], allow_headers=["Content-Type", "X-User", "X-API-Key"],
-        expose_headers=["Content-Disposition"], max_age=600)
+        allow_methods=["GET", "POST", "PUT", "OPTIONS"], allow_headers=["Content-Type", "X-User", "X-API-Key", "X-Request-ID"],
+        expose_headers=["Content-Disposition", "X-Request-ID", "Retry-After"], max_age=600)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -81,8 +105,8 @@ def create_app(ctx: Optional[AppContext] = None, settings: Optional[Settings] = 
             response.headers.setdefault("Content-Security-Policy", CSP)
         return response
 
-    api = APIRouter(prefix="/api", dependencies=[Depends(identify)])  # API-key mode protects every route
-    for module in (admin, sources, connections, mapping, governance, pipeline, audit, construction, keys):
+    api = APIRouter(prefix="/api", dependencies=[Depends(security.authorize)])  # identifies the caller, checks the role of every route, puts high-risk actions on record first
+    for module in (admin, sources, combine, compliance, quality, insight, duplicates, tasks, packs, connections, mapping, mapping_target, fix, guide, governance, pipeline, audit, construction, keys, assistant):
         api.include_router(module.router)
     app.include_router(api)
     app.include_router(admin.public_router, prefix="/api")  # health: no credentials needed for probes

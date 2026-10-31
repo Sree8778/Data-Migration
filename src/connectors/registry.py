@@ -8,7 +8,7 @@ from src.connectors.dialects import CONNECTORS
 from src.connectors.storage import STORAGE
 
 ALL_KINDS = tuple(sorted({*CONNECTORS, *STORAGE}))
-DATABASE_LABEL = {"oracle": "Service name", "postgresql": "Database", "mssql": "Database", "mysql": "Database (schema)",
+DATABASE_LABEL = {"oracle": "Service name", "postgresql": "Database", "mssql": "Database", "mysql": "Database (schema)", "mongodb": "Authentication database", "firestore": "Firebase project ID",
                   "azure_blob": "Default container (optional)", "s3": "Default bucket (optional)", "sftp": "Base directory"}
 
 

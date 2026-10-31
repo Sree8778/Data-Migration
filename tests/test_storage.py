@@ -315,7 +315,10 @@ def test_browse_and_import_files_through_the_api(store, client, ctx):
     assert body["origin"]["kind"] == "storage" and body["origin"]["key"] == "customers.csv" and body["origin"]["provider"] == store.kind
     profile = client.post(f"/api/profile/{body['table_id']}").json()
     zips = {v["value"] for c in profile["columns"] if c["column_name"] == "ZIP" for v in c["top_values"]}
-    assert "02134" in zips                                                                       # the leading zero survived download and landing
+    assert zips == {"99999"}                                                                     # a postal code is personal data: the profile shows its shape only...
+    import duckdb
+    landed = {r[0] for r in duckdb.sql(f"SELECT ZIP FROM read_parquet('{client.app.state.ctx.source_file(body['table_id']).as_posix()}')").fetchall()}
+    assert "02134" in landed                                                    # ...while the landed data kept the leading zero through download and landing
 
     gz = client.post("/api/sources/import-file", json={"connection": name, "container": store.container, "key": "sub/ar_customers.csv.gz"})
     assert gz.status_code == 201 and gz.json()["rows_landed"] == 3 and gz.json()["table_name"] == "AR_CUSTOMERS"

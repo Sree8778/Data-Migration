@@ -602,7 +602,7 @@ def test_missing_fields_without_rules_use_placeholder_rules_and_rededuplication(
     run = client.post(f"/api/pipeline/run/{mid}", json={}).json()
     run_id = run["run_id"]
     assert run["readiness"]["state"] == "BLOCKED" and run["dedup_applied"]  # every record misses 3 mandatory fields
-    assert run["run"]["deduplication"]["duplicate_children"] == 0 and run["run"]["deduplication"]["excluded_failed_rows"] == 300
+    assert run["run"]["deduplication"]["duplicate_children"] == 0 and run["run"]["deduplication"]["excluded_failed_rows"] == 0   # failed records take part in deduplication now
     assert (ctx.run_dir(run_id) / "dedup_config.json").is_file()
     summary = client.get(f"/api/construction/{run_id}").json()
     assert summary["incomplete_records"] == 300
@@ -619,7 +619,7 @@ def test_missing_fields_without_rules_use_placeholder_rules_and_rededuplication(
 
     rv = client.post(f"/api/construction/revalidate/{run_id}").json()
     assert rv["deduplicated_again"] and rv["readiness"]["state"] == "READY_FOR_LOAD"
-    # deduplication now covers the records that were excluded as failed before construction
+    # deduplication runs again on the constructed values (the 300 records all failed on missing mandatory fields the first time)
     assert rv["validation"]["input_records"] == 300 and rv["validation"]["evaluated_records"] == 300
     assert all(r["_TRANSFORM_STATUS"] == "OK" for r in read_parquet(ctx.run_dir(run_id) / "construction" / "deduplicated.parquet"))
 

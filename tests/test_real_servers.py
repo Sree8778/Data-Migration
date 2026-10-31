@@ -336,7 +336,10 @@ def test_import_a_table_through_the_api(server, client):
     profile = client.post(f"/api/profile/{body['table_id']}").json()
     assert profile["total_rows"] == 4
     zips = {v["value"] for c in profile["columns"] if c["column_name"].lower() == "zip" for v in c["top_values"]}
-    assert "02134" in zips                                                      # the leading zero survived the real database and the landing
+    assert zips == {"99999"}                                                    # a postal code is personal data: the profile shows its shape only...
+    import duckdb
+    landed = {r[0] for r in duckdb.sql(f"SELECT zip FROM read_parquet('{client.app.state.ctx.source_file(body['table_id']).as_posix()}')").fetchall()}
+    assert "02134" in landed                                                    # ...while the landed data kept the leading zero through the real database and the landing
     names = {c["column_name"].lower(): c for c in profile["columns"]}
     assert names["zip"]["null_count"] == 1 and names["notes"]["null_count"] >= 1
     pk = [c["column_name"].lower() for c in profile["columns"] if c["column_name"].lower() == "cust_id"]

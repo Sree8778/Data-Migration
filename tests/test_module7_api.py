@@ -133,7 +133,7 @@ def rule_ids(detail) -> dict:
 # ------------------------------------------------------------------ the full lifecycle over HTTP
 def test_full_lifecycle_upload_to_reconciliation(client, ctx, dataset):
     assert client.get("/api/health").json()["target_catalog_ready"] is False
-    assert client.post("/api/admin/seed-sap-catalog").json()["tables"] == 6
+    assert client.post("/api/admin/seed-sap-catalog").json()["tables"] == 13
     assert client.get("/api/health").json()["target_catalog_ready"] is True
 
     # ---- upload / register

@@ -152,7 +152,8 @@ def _add_db_delivery_checks(report, run_dir) -> None:
         if d.get("values_verified"):
             report.checks.append(CheckResult(
                 name=f"db_values_{d['dialect']}_{d['schema']}.{d['table']}", passed=True,
-                detail=f"{d['cells_compared']:,} cell(s) read back from {where} before the commit equal what was sent (content fingerprint {d['value_digest']})"))
+                detail=f"{d['cells_compared']:,} cell(s) read back from {where} " + ("after writing, before the delivery was accepted," if d["dialect"] == "firestore" else "before the commit")
+                       + f" equal what was sent (content fingerprint {d['value_digest']})"))
         elif "values_verified" in d:
             report.checks.append(CheckResult(
                 name=f"db_values_{d['dialect']}_{d['schema']}.{d['table']}", passed=False,

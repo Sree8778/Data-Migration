@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="muted">Reuse an approved mapping in the next migration. A <strong>content pack</strong> holds the rules, their lookup tables and the exclusion rules, with a checksum, and never any record values. An import creates a <em>draft</em>: rules that do not fit the new table are skipped and listed, every imported rule is flagged for review, and an independent person still approves it.</p>
+<section class="card">
+  <h2>Export</h2>
+  <div class="grid form">
+    <label>Mapping set<input id="x-id" type="number" min="1" placeholder="e.g. 3"></label>
+    <label>Pack name <span class="muted">(optional)</span><input id="x-name" maxlength="128"></label>
+    <div class="wide"><button type="button" class="btn primary" id="export">Download the pack (.json)</button></div>
+  </div>
+</section>
+<section class="card">
+  <h2>Import</h2>
+  <div class="grid form">
+    <label>Into table<input id="i-table" type="number" min="1" placeholder="table number"></label>
+    <label>Pack file<input id="i-file" type="file" accept=".json,application/json"></label>
+    <div class="wide"><label class="check"><input type="checkbox" id="i-dry" checked> dry run: show what would happen, write nothing</label></div>
+    <div class="wide"><button type="button" class="btn primary" id="import">Check / import</button></div>
+  </div>
+  <div id="result"></div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/js/packs.js"></script>{% endblock %}

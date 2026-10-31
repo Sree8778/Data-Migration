@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="muted">Each control the application relies on, checked now against this installation, with the standard it serves. This is evidence, not certification: the organisational controls (who holds the keys, the lawful basis, the DPIA) stay with the people who run it. Needs the auditor role when access control is on.</p>
+<div class="toolbar">
+  <button class="btn" id="reload">Re-check</button>
+  <button class="btn primary" id="verify">Verify the audit trail</button>
+  <span class="muted" id="verify-result"></span>
+</div>
+<div id="summary" class="cards"></div>
+<section class="card"><h2>Controls</h2><div id="controls"><p class="muted">Loading...</p></div></section>
+<section class="card"><h2>Latest audit entries</h2><div id="audit"></div></section>
+{% endblock %}
+{% block scripts %}<script src="/static/js/compliance.js"></script>{% endblock %}

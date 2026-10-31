@@ -17,7 +17,8 @@ from __future__ import annotations
 
 from collections import Counter
 from decimal import Decimal
-from typing import Callable, Optional
+import re
+from typing import Callable, Iterable, Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload, sessionmaker
@@ -30,6 +31,7 @@ from src.schemas.mapping_ai import (
     ProposalOutcome,
     ReviewStatus,
     SourceColumnContext,
+    TargetCandidate,
     ValidationResult,
 )
 from src.services.embedding_service import EmbeddingService
@@ -57,6 +59,56 @@ def _answer_key(rec) -> tuple:
 def _describe(key: tuple) -> str:
     return key[0] if len(key) == 1 else f"{key[0]}.{key[1]} ({key[2]})"
 
+
+def tally_answers(answers: list, runs: int) -> tuple[tuple, float, list[str], Optional[str]]:
+    """The vote over repeated answers (each a recommendation, None for NO_MATCH, or the error text): (winning decision, share of runs that gave it,
+    the losing decisions as "n x TABLE.COLUMN (RULE_TYPE)", a sentence saying the column is unstable or None). A tie goes to the answer the model was
+    most confident about, preferring a real mapping to NO_MATCH or an error."""
+    votes = Counter(_ERROR if isinstance(a, str) else _NO_MATCH if a is None else _answer_key(a) for a in answers)
+    best = max(votes.values())
+    leaders = [k for k, n in votes.items() if n == best]
+    if len(leaders) > 1:
+        leaders.sort(key=lambda k: (k in (_NO_MATCH, _ERROR), -max((a.confidence_score for a in answers if not isinstance(a, str) and a is not None
+                                                                      and _answer_key(a) == k), default=0.0)))
+    winner = leaders[0]
+    losers = [f"{n} x {_describe(k)}" for k, n in votes.most_common() if k != winner]
+    unstable = (f"unstable: {votes[winner]} of {runs} runs gave {_describe(winner)}, the others gave " + ", ".join(losers)) if losers else None
+    return winner, votes[winner] / runs, losers, unstable
+
+
+
+# A business partner is a customer, a supplier or both, and the target has separate tables for each side. A customer extract that is offered the supplier tables gets a supplier
+# currency or payment term now and then (their descriptions are alike), and every such choice is a wrong field in SAP. The side is decided from what the source calls itself.
+CUSTOMER_WORDS = ("CUST", "KUNNR", "KUNDE", "CLIENT", "DEBITOR", "DEBTOR", "RECEIVABLE", "BUYER", "AR_")
+SUPPLIER_WORDS = ("VEND", "LIFNR", "SUPPLIER", "LIEFERANT", "KREDITOR", "CREDITOR", "PAYABLE", "SELLER", "AP_")
+OTHER_SIDE_TABLES = {"customer": frozenset({"LFB1", "LFM1"}), "supplier": frozenset({"KNB1", "KNVV"}), "both": frozenset()}
+
+
+_KEY_OWNERS = {"cust", "customer", "kunde", "client", "partner", "vendor", "supplier", "debitor", "creditor"}
+_KEY_WORDS = {"id", "no", "nr", "num", "number", "key", "code"}
+_OTHER_DATA = {"tax", "vat", "house", "street", "bank", "iban", "phone", "tel", "fax", "order", "invoice", "zip", "postal", "region", "country", "city", "email", "mail", "currency", "terms",
+               "address", "addr", "name", "payment", "account", "group", "type", "language", "sales", "company"}
+
+
+def pinned_targets(column_name: str) -> list[tuple[str, str]]:
+    """The targets that must be offered for a column whose name says it is the customer's or supplier's own key (CUST_ID, CUSTOMER_NO, KUNNR, LIFNR, a bare ID): the external partner
+    number. Every migration maps the legacy key there, and similarity alone can rank bank numbers above it."""
+    tokens = set(re.sub(r"[_\-\.\s]+", " ", re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", column_name)).lower().split())
+    if tokens & _OTHER_DATA:
+        return []
+    if tokens & {"kunnr", "lifnr"} or (tokens & _KEY_OWNERS and tokens & _KEY_WORDS) or tokens in ({"id"}, {"key"}):
+        return [("BUT000", "BP_EXT")]
+    return []
+
+
+def infer_partner_side(table_name: str, column_names: Iterable[str]) -> str:
+    """'customer', 'supplier' or 'both', from the table name (counted double) and the column names. Nothing to go on: customer, which is what this application migrates first."""
+    def score(words: tuple[str, ...]) -> int:
+        return sum(2 for w in words if w in table_name.upper()) + sum(1 for n in column_names for w in words if w in n.upper())
+    customer, supplier = score(CUSTOMER_WORDS), score(SUPPLIER_WORDS)
+    if customer and supplier and min(customer, supplier) * 2 >= max(customer, supplier):
+        return "both"
+    return "supplier" if supplier > customer else "customer"
 
 class MappingOrchestrator:
     def __init__(
@@ -87,6 +139,13 @@ class MappingOrchestrator:
             source_table_id, target_object_name, mapping_set_name
         ).mapping_set_id
 
+    def side_exclusions(self, source_table_id: int, partner_side: str = "auto") -> tuple[str, frozenset[str]]:
+        """(the side the source is treated as, the target tables that are then not offered): a customer extract is never offered the supplier tables, and the other way round."""
+        table_name, _, _ = self._load_source(source_table_id)
+        names = [c.column_name for c in self._all_source_columns(source_table_id)]
+        side = partner_side if partner_side in ("customer", "supplier", "both") else infer_partner_side(table_name, names)
+        return side, OTHER_SIDE_TABLES.get(side, frozenset())
+
     def generate_table_mapping_report(
         self,
         source_table_id: int,
@@ -94,6 +153,7 @@ class MappingOrchestrator:
         mapping_set_name: str = "AI_Draft_Mapping",
         progress: Optional[Callable[[str, int, int, Optional[str]], None]] = None,
         consistency_runs: Optional[int] = None,
+        partner_side: str = "auto",
     ) -> MappingGenerationReport:
         """Same as `generate_table_mapping` but returns the full per-column report.
 
@@ -121,6 +181,7 @@ class MappingOrchestrator:
             )
         self._embeddings.build_index()
         all_names = [c.column_name for c in self._all_source_columns(source_table_id)]
+        side, excluded = self.side_exclusions(source_table_id, partner_side)
 
         runs = self._consistency_runs if consistency_runs is None else max(1, min(MAX_CONSISTENCY_RUNS, int(consistency_runs)))
         if getattr(self._llm, "deterministic", False):
@@ -132,7 +193,7 @@ class MappingOrchestrator:
         notify("start", 0, len(columns), None)
         for position, ctx in enumerate(columns, start=1):
             notify("column", position, len(columns), ctx.column_name)
-            candidates = self._embeddings.get_top_k_candidates(ctx.column_name, ctx.data_type, TOP_K, ctx.sample_values)
+            candidates = self._embeddings.get_top_k_candidates(ctx.column_name, ctx.data_type, TOP_K, ctx.sample_values, exclude_tables=excluded, must_include=pinned_targets(ctx.column_name))
             labels = [f"{c.table_name}.{c.column_name}" for c in candidates]
             answers: list = []  # a FieldMappingRecommendation, None (NO_MATCH) or the error text, one per run
             for _ in range(runs):
@@ -140,16 +201,7 @@ class MappingOrchestrator:
                     answers.append(self._llm.recommend(ctx, candidates))  # LLMUnavailableError aborts the run
                 except LLMOutputError as exc:
                     answers.append(str(exc))
-            votes = Counter(_ERROR if isinstance(a, str) else _NO_MATCH if a is None else _answer_key(a) for a in answers)
-            best = max(votes.values())
-            leaders = [k for k, n in votes.items() if n == best]
-            if len(leaders) > 1:  # a tie: keep the answer the model was most confident about, preferring a real mapping to NO_MATCH or an error
-                leaders.sort(key=lambda k: (k in (_NO_MATCH, _ERROR), -max((a.confidence_score for a in answers if not isinstance(a, str) and a is not None
-                                                                              and _answer_key(a) == k), default=0.0)))
-            winner = leaders[0]
-            agreement = votes[winner] / runs
-            losers = [f"{n} x {_describe(k)}" for k, n in votes.most_common() if k != winner]
-            unstable = (f"unstable: {votes[winner]} of {runs} runs gave {_describe(winner)}, the others gave " + ", ".join(losers)) if losers else None
+            winner, agreement, losers, unstable = tally_answers(answers, runs)
 
             if winner == _ERROR:
                 reasons = [next(a for a in answers if isinstance(a, str))] + ([unstable] if unstable else [])
@@ -183,9 +235,42 @@ class MappingOrchestrator:
 
         notify("persist", len(columns), len(columns), None)
         self._resolve_target_conflicts(proposals, validations)
-        return self._persist(
+        report = self._persist(
             source_table_id, target_object_name, mapping_set_name, proposals, validations, skipped, runs
         )
+        report.partner_side = side
+        return report
+
+    # ------------------------------------------------------------------ single-column helpers (the AI assistant's "suggest a rule")
+    def context_for_column(self, source_table_id: int, column_name: str) -> SourceColumnContext:
+        """What the model may see about one source column (profile stats and masked samples); the column must have been profiled."""
+        _, contexts, skipped = self._load_source(source_table_id)
+        for ctx in contexts:
+            if ctx.column_name.lower() == column_name.strip().lower():
+                return ctx
+        if any(c.lower() == column_name.strip().lower() for c in skipped):
+            raise MappingValidationError(f"column {column_name} has not been profiled; run the profiler first")
+        raise NotFoundError(f"source column '{column_name}' does not exist")
+
+    def candidates_for(self, ctx: SourceColumnContext, exclude_column_ids: Iterable[int] = (), top_k: int = TOP_K + 4, hint: Optional[str] = None,
+                       exclude_tables: Iterable[str] = ()) -> list[TargetCandidate]:
+        """The best target columns for one source column, leaving out targets that already have a rule. A person's hint steers the retrieval too."""
+        taken = set(exclude_column_ids)
+        self._embeddings.build_index()
+        found = self._embeddings.get_top_k_candidates(ctx.column_name, ctx.data_type, top_k + len(taken), ctx.sample_values, exclude_tables=exclude_tables, must_include=pinned_targets(ctx.column_name),
+                                                      **({"hint": hint} if hint else {}))
+        return [c for c in found if c.column_id not in taken][:top_k]
+
+    def all_source_column_names(self, source_table_id: int) -> list[str]:
+        return [c.column_name for c in self._all_source_columns(source_table_id)]
+
+    @property
+    def llm(self) -> LLMMapperService:
+        return self._llm
+
+    @property
+    def validator(self) -> RuleValidator:
+        return self._validator
 
     # ------------------------------------------------------------------ loading
     def _load_source(self, source_table_id: int) -> tuple[str, list[SourceColumnContext], list[str]]:

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="muted">Every rule of the library is run over the landed copy of this table, by column role (e-mail, phone, tax number, postal code, country, name, date, amount). Findings come worst first, with example values (shown as a shape where the column holds personal data) and what to do about each. Every assessment is kept, so the next one shows what changed.</p>
+<div class="toolbar">
+  <button class="btn primary" id="assess">Assess data quality now</button>
+  <span class="muted" id="assess-meta"></span>
+</div>
+<div id="summary" class="cards"></div>
+<section class="card">
+  <h2>Findings</h2>
+  <div id="findings"><p class="muted">Loading...</p></div>
+</section>
+<section class="card">
+  <h2>Columns</h2>
+  <div id="columns"></div>
+</section>
+<section class="card">
+  <h2>History</h2>
+  <div id="history"></div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/js/quality.js"></script>{% endblock %}

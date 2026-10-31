@@ -22,6 +22,7 @@ import duckdb
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from src.services.pii_detector import classify as classify_pii
 from src.db.enums import PiiClassification
 from src.db.models import CatColumn, CatTable
 from src.schemas.profiler import (
@@ -291,6 +292,7 @@ class ProfilerService:
                     continue
                 seen.add(col.column_name.lower())
                 samples = prof.sample_values
+                col.pii_classification = classify_pii(col.column_name, samples, col.pii_classification)   # raised when the values look like personal data, never lowered
                 if col.pii_classification == PiiClassification.RESTRICTED_PII:
                     samples = [_mask_shape(s) for s in samples]
                     masked.append(col.column_name)

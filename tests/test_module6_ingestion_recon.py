@@ -30,7 +30,7 @@ from src.services.cockpit_generator import (
     GENERAL,
     ROLES,
     SALES,
-    SHEET_ORDER,
+    CORE_SHEETS,
     CockpitConsistencyError,
     CockpitGenerator,
     column_letter,
@@ -188,14 +188,14 @@ def test_cockpit_workbook_has_five_consistent_sheets(tmp_path):
     ])
     result = CockpitGenerator().generate(staging, tmp_path / "cockpit.xlsx")
     path = result.path
-    assert zipfile.is_zipfile(path) and list_sheets(path) == SHEET_ORDER
-    assert [n.split(" (")[1].rstrip(")") for n in SHEET_ORDER] == ["BUT000", "BUT100", "ADRC", "KNB1", "KNVV"]
+    assert zipfile.is_zipfile(path) and list_sheets(path) == CORE_SHEETS
+    assert [n.split(" (")[1].rstrip(")") for n in CORE_SHEETS] == ["BUT000", "BUT100", "ADRC", "KNB1", "KNVV"]
     assert result.business_partners == 3
     assert result.sheet_rows == {GENERAL: 3, ROLES: 6, ADDRESS: 2, COMPANY: 2, SALES: 2}
     assert validate_workbook(path) == []
 
     general = list(iter_sheet_rows(path, GENERAL))
-    assert general[0] == ["BP_EXT", "TYPE", "BU_GROUP", "NAME_ORG1", "NAME_ORG2", "BU_SORT1"]
+    assert general[0] == ["BP_EXT", "TYPE", "BU_GROUP", "NAME_ORG1", "NAME_ORG2", "BU_SORT1", "NAME_FIRST", "NAME_LAST"]
     keys = [r[0] for r in general[1:]]
     assert keys == ["0000000123", "0000000045", "ABC-1"]  # ALPHA conversion on the join key
     assert general[1][3] == "Acme & Sons <GmbH>"  # XML escaping round-trips

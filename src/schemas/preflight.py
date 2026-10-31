@@ -20,6 +20,11 @@ class PreflightFinding(BaseModel):
     message: str
     rule_id: Optional[int] = None
     target: Optional[str] = None
+    # What the person should do about it, in plain words, and which button of the Mapping Studio does it (draft_lookups | edit_rule | review_rules | add_placeholders |
+    # generate | reimport | none). Every finding has a next step: a problem without one is only a complaint.
+    next_step: str = ""
+    action: str = "none"
+    rule_ids: list[int] = Field(default_factory=list)  # the rules the action applies to (several for REVIEW_PENDING)
 
 
 class UnmatchedValue(BaseModel):
@@ -41,6 +46,20 @@ class RuleCheck(BaseModel):
     verdict: str = "OK"  # OK | WARNING | BLOCKER
 
 
+class DestinationCheck(BaseModel):
+    level: str  # block | warn | info
+    code: str
+    message: str
+    next_step: str = ""
+
+
+class DestinationInfo(BaseModel):
+    connection: str
+    label: str
+    dialect: str = ""
+    checks: list[DestinationCheck] = Field(default_factory=list)
+
+
 class PreflightReport(BaseModel):
     mapping_set_id: int
     checked_at: datetime
@@ -55,6 +74,8 @@ class PreflightReport(BaseModel):
     blockers: int
     warnings: int
     findings: list[PreflightFinding]
+    next_steps: list[str] = Field(default_factory=list)  # the whole way to a submittable mapping, in order
     rules: list[RuleCheck]
     models: list[str] = Field(default_factory=list)  # the AI model names recorded on the mapping's rules
     exclusion_rules: list[int] = Field(default_factory=list)  # ids of the exclusion rules the sample was cut by
+    destination: Optional[DestinationInfo] = None  # the destination the mapping set is pointed at (None = SAP) and what it says about the records' keys, quota, names

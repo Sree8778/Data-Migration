@@ -91,10 +91,10 @@ def test_tls_failures_get_actionable_messages_without_the_password():
 
 def test_the_azure_presets_are_offered(client):
     presets = {p["id"]: p for p in client.get("/api/connections/presets").json()}
-    assert set(presets) == {"azure-sql", "azure-postgresql", "azure-mysql"}
+    assert set(presets) == {"azure-sql", "azure-postgresql", "azure-mysql", "amazon-redshift"}
     assert presets["azure-sql"]["dialect"] == "mssql" and presets["azure-sql"]["options"]["encrypt"] is True and presets["azure-sql"]["port"] == 1433
     assert presets["azure-postgresql"]["options"] == {"sslmode": "require"} and presets["azure-mysql"]["options"]["ssl"] is True
-    assert all("windows.net" in p["hint"] or "azure.com" in p["hint"] for p in presets.values())
+    assert all("windows.net" in p["hint"] or "azure.com" in p["hint"] for i, p in presets.items() if i.startswith("azure-"))
     saved = client.post("/api/connections", json={"name": "az1", "dialect": "mssql", "host": "demo.database.windows.net", "user": "mig", "password": "pw", "database": "legacy",
                                                   "options": presets["azure-sql"]["options"]})
     assert saved.status_code == 201 and saved.json()["options"]["encrypt"] is True and "pw" not in saved.text.replace("password", "")

@@ -1,6 +1,6 @@
 """SAP S/4HANA Migration Cockpit staging workbook generator (multi-sheet OOXML `.xlsx`, a ZIP of XML).
 
-Input is Module 5's `valid.parquet`. Output is one workbook with five sheets, each keyed by
+Input is Module 5's `valid.parquet`. Output is one workbook with five core sheets and, only when the data has something for them, up to seven optional ones, each keyed by
 `BP_EXT` in column A:
 
     1  General Data (BUT000)        one row per business partner
@@ -8,6 +8,8 @@ Input is Module 5's `valid.parquet`. Output is one workbook with five sheets, ea
     3  Address Data (ADRC)          partners with address data
     4  Company Code Data (KNB1)     partners with a company code (BUKRS)
     5  Sales Org Data (KNVV)        partners with a full sales area (VKORG/VTWEG/SPART)
+    optional, in this order, present only when at least one partner has data for them:
+    E-Mail (ADR6), Telephone (ADR2), Fax (ADR3), Tax Numbers (DFKKBPTAXNUM), Bank Details (BUT0BK), Vendor Company Code (LFB1), Vendor Purchasing Org (LFM1)
 
 Values are written as text so leading zeros survive; ALPHA conversion (zero-padding of numeric
 keys to 10 characters) is applied by the shared `bp_model`. The generated file is read back and
@@ -41,14 +43,29 @@ GENERAL, ROLES, ADDRESS, COMPANY, SALES = (
     "General Data (BUT000)", "BP Roles (BUT100)", "Address Data (ADRC)",
     "Company Code Data (KNB1)", "Sales Org Data (KNVV)",
 )
+EMAIL, PHONE, FAX, TAX, BANK, VENDOR_COMPANY, VENDOR_PURCHASING = (
+    "E-Mail Data (ADR6)", "Telephone Data (ADR2)", "Fax Data (ADR3)", "Tax Numbers (DFKKBPTAXNUM)", "Bank Details (BUT0BK)",
+    "Vendor Company Code (LFB1)", "Vendor Purchasing Org (LFM1)",
+)
 SHEET_COLUMNS: dict[str, list[str]] = {
-    GENERAL: ["BP_EXT", "TYPE", "BU_GROUP", "NAME_ORG1", "NAME_ORG2", "BU_SORT1"],
+    GENERAL: ["BP_EXT", "TYPE", "BU_GROUP", "NAME_ORG1", "NAME_ORG2", "BU_SORT1", "NAME_FIRST", "NAME_LAST"],
     ROLES: ["BP_EXT", "RLTYP"],
     ADDRESS: ["BP_EXT", "COUNTRY", "STREET", "HOUSE_NUM1", "CITY1", "POST_CODE1", "REGION", "LANGU"],
     COMPANY: ["BP_EXT", "BUKRS", "AKONT", "ZTERM", "ZWELS"],
     SALES: ["BP_EXT", "VKORG", "VTWEG", "SPART", "WAERS", "INCO1"],
+    EMAIL: ["BP_EXT", "SMTP_ADDR"],
+    PHONE: ["BP_EXT", "TEL_NUMBER", "TEL_EXTENS"],
+    FAX: ["BP_EXT", "FAX_NUMBER", "FAX_EXTENS"],
+    TAX: ["BP_EXT", "TAXTYPE", "TAXNUM"],
+    BANK: ["BP_EXT", "BKVID", "BANKS", "BANKL", "BANKN", "KOINH", "IBAN"],
+    VENDOR_COMPANY: ["BP_EXT", "BUKRS", "AKONT", "ZTERM", "ZWELS"],
+    VENDOR_PURCHASING: ["BP_EXT", "EKORG", "WAERS", "ZTERM", "INCO1"],
 }
-SHEET_ORDER = [GENERAL, ROLES, ADDRESS, COMPANY, SALES]
+CORE_SHEETS = [GENERAL, ROLES, ADDRESS, COMPANY, SALES]
+OPTIONAL_SHEETS = [EMAIL, PHONE, FAX, TAX, BANK, VENDOR_COMPANY, VENDOR_PURCHASING]
+SHEET_ORDER = CORE_SHEETS + OPTIONAL_SHEETS  # the canonical order; a workbook holds the core sheets and the optional ones that have rows
+# the record attribute each optional sheet is filled from
+_OPTIONAL_SOURCE = {EMAIL: "email", PHONE: "phone", FAX: "fax", TAX: "tax", BANK: "bank", VENDOR_COMPANY: "vendor_company", VENDOR_PURCHASING: "vendor_purchasing"}
 _XML_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 _MAX_ISSUES = 20
 
@@ -99,7 +116,7 @@ class CockpitGenerator:
                 partners, warnings, blocking = self._write_rows(valid_parquet, spools, counts)
                 if blocking:
                     raise CockpitConsistencyError(blocking)
-                self._assemble(tmp_final, spools)
+                self._assemble(tmp_final, spools, CORE_SHEETS + [n for n in OPTIONAL_SHEETS if counts[n] > 1])
             finally:
                 for fh in spools.values():
                     fh.close()
@@ -110,7 +127,7 @@ class CockpitGenerator:
             raise CockpitConsistencyError(issues)
         shutil.move(str(tmp_final), str(out))
         return CockpitResult(
-            path=str(out), sheet_rows={n: c - 1 for n, c in counts.items()}, business_partners=partners,
+            path=str(out), sheet_rows={n: c - 1 for n, c in counts.items() if n in CORE_SHEETS or c > 1}, business_partners=partners,
             warnings=warnings,
         )
 
@@ -141,18 +158,22 @@ class CockpitGenerator:
                 emit(COMPANY, [rec.bp_ext] + [rec.company_code.get(c) for c in SHEET_COLUMNS[COMPANY][1:]])
             if rec.sales_area:
                 emit(SALES, [rec.bp_ext] + [rec.sales_area.get(c) for c in SHEET_COLUMNS[SALES][1:]])
+            for name, attribute in _OPTIONAL_SOURCE.items():
+                data = getattr(rec, attribute)
+                if data:
+                    emit(name, [rec.bp_ext] + [data.get(c) for c in SHEET_COLUMNS[name][1:]])
         warnings = [f"{n} record(s): {w}" for w, n in sorted(warning_counts.items())]
         return partners, warnings, blocking
 
     @staticmethod
-    def _assemble(path: Path, spools) -> None:
+    def _assemble(path: Path, spools, order: list[str]) -> None:
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
             sheets_xml = "".join(
-                f'<sheet name="{escape(name)}" sheetId="{i}" r:id="rId{i}"/>' for i, name in enumerate(SHEET_ORDER, 1))
+                f'<sheet name="{escape(name)}" sheetId="{i}" r:id="rId{i}"/>' for i, name in enumerate(order, 1))
             overrides = "".join(
                 f'<Override PartName="/xl/worksheets/sheet{i}.xml" '
                 f'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
-                for i in range(1, len(SHEET_ORDER) + 1))
+                for i in range(1, len(order) + 1))
             zf.writestr("[Content_Types].xml",
                         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
                         '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
@@ -171,10 +192,10 @@ class CockpitGenerator:
                         f'xmlns:r="{REL_NS}"><sheets>{sheets_xml}</sheets></workbook>')
             rels = "".join(
                 f'<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
-                f'Target="worksheets/sheet{i}.xml"/>' for i in range(1, len(SHEET_ORDER) + 1))
+                f'Target="worksheets/sheet{i}.xml"/>' for i in range(1, len(order) + 1))
             zf.writestr("xl/_rels/workbook.xml.rels",
                         f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="{PKG_REL_NS}">{rels}</Relationships>')
-            for i, name in enumerate(SHEET_ORDER, 1):
+            for i, name in enumerate(order, 1):
                 header = _row_xml(1, SHEET_COLUMNS[name])
                 with zf.open(f"xl/worksheets/sheet{i}.xml", "w") as entry:
                     entry.write(
@@ -231,8 +252,9 @@ def validate_workbook(path: str | Path) -> list[str]:
     """Referential-consistency check of a generated cockpit workbook; returns the issues found."""
     issues: list[str] = []
     sheets = list_sheets(path)
-    if sheets != SHEET_ORDER:
-        return [f"unexpected sheets {sheets}, expected {SHEET_ORDER}"]
+    expected = CORE_SHEETS + [n for n in OPTIONAL_SHEETS if n in sheets]
+    if sheets != expected:
+        return [f"unexpected sheets {sheets}, expected the core sheets {CORE_SHEETS} followed by any of {OPTIONAL_SHEETS} in that order"]
 
     general_keys: set[str] = set()
     for i, row in enumerate(iter_sheet_rows(path, GENERAL)):
@@ -250,7 +272,7 @@ def validate_workbook(path: str | Path) -> list[str]:
         general_keys.add(key)
 
     roles_seen: set[str] = set()
-    for name in (ROLES, ADDRESS, COMPANY, SALES):
+    for name in [n for n in SHEET_ORDER if n in sheets and n != GENERAL]:
         for i, row in enumerate(iter_sheet_rows(path, name)):
             if i == 0:
                 if row[: len(SHEET_COLUMNS[name])] != SHEET_COLUMNS[name]:

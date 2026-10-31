@@ -467,8 +467,11 @@ class Connector(ABC):
 
     def load_table(self, schema: str, table: str, cols: list[ColumnDef], primary_key: list[str], rows: Iterable[Sequence[Any]],
                    mode: str = "create", batch_size: int = 1000, expected_rows: Optional[int] = None,
-                   progress: Optional[Callable[[int], None]] = None, verify_values: bool = True) -> LoadOutcome:
+                   progress: Optional[Callable[[int], None]] = None, verify_values: bool = True,
+                   owned_marker_columns: Sequence[str] = ()) -> LoadOutcome:
         """Create `schema.table` and fill it, all-or-nothing. `create` refuses an existing table; `replace` swaps it for the new one.
+        `owned_marker_columns`: a `replace` only drops an existing table that has all of these columns, i.e. one an earlier delivery of
+        this application created. Any other table (somebody's data, a typo in the table name) is refused and left untouched.
         The row count of the new table is read back inside the same transaction and must equal the rows sent (and `expected_rows`),
         otherwise nothing is kept. Where the product can roll DDL back (PostgreSQL, SQL Server) a replace is one transaction. Where it
         cannot (Oracle, MySQL) the new table is built under a temporary name and verified FIRST; only then is the old table dropped and
@@ -496,6 +499,12 @@ class Connector(ABC):
             replaced = table in existing
             if replaced and mode == "create":
                 raise ConnectorError(f"{schema}.{table} already exists; load into a new table name, or choose replace to drop it first")
+            if replaced and owned_marker_columns:
+                held = {c.name.lower() for c in self._columns(conn, schema, table)}
+                missing = [m for m in owned_marker_columns if self.natural_case(m).lower() not in held]
+                if missing:
+                    raise ConnectorError(f"{schema}.{table} was not created by a delivery of this application (it has no {', '.join(missing)} column), "
+                                         "so replace will not drop it; choose a new table name, or drop the table yourself if it really is disposable")
             work = table
             swap = replaced and not self.transactional_ddl
             if swap:

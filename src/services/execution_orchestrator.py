@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.db.enums import MappingStatus, MigrationPhase, RunStatus
@@ -138,6 +138,25 @@ class ExecutionOrchestrator:
         )
         (run_dir / "report.json").write_text(report.model_dump_json(indent=2), encoding="utf-8")
         return report
+
+    def fail_interrupted_runs(self) -> list[int]:
+        """Call once when the server starts: a run still RUNNING in a pipeline phase belonged to a process that is gone (killed, crashed,
+        redeployed), and nothing will ever finish it. Mark it FAILED, with the reason in its report, so it neither looks alive nor blocks
+        anybody from re-running. Runs in the LOAD phase are left alone: a load may have reached SAP and needs a person to look at it.
+        Assumes ONE server process per workspace, as the in-memory job queue already does."""
+        phases = (MigrationPhase.EXTRACT, MigrationPhase.PROFILE, MigrationPhase.TRANSFORM, MigrationPhase.VALIDATE)
+        now = datetime.now(timezone.utc)
+        with self._session_factory.begin() as session:
+            ids = list(session.scalars(select(MigMigrationRun.id).where(MigMigrationRun.status == RunStatus.RUNNING, MigMigrationRun.current_phase.in_(phases))))
+            if ids:
+                session.execute(update(MigMigrationRun).where(MigMigrationRun.id.in_(ids)).values(status=RunStatus.FAILED, completed_at=now))
+        for run_id in ids:
+            run_dir = self._output_dir / f"run_{run_id}"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "report.json").write_text(json.dumps({
+                "run_id": run_id, "status": "FAILED", "completed_at": now.isoformat(),
+                "error": "interrupted: the server stopped before this run finished; start a new run"}, indent=2), encoding="utf-8")
+        return ids
 
     # ------------------------------------------------------------------ run bookkeeping
     def _start_run(self, mapping_set_id: int, wave_name: str) -> tuple[int, datetime]:

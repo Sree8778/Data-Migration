@@ -44,3 +44,14 @@ test_certs/
 mock_data/recordings/
 mock_data/large/
 mock_data/large20k/
+
+# Google service-account / Firebase key files must never be committed
+*adminsdk*.json
+*service-account*.json
+*service_account*.json
+firebase-key*.json
+*-firebase-*.json
+
+# raw screen recordings show the whole desktop: only the trimmed *_clean.mp4 may be shared
+mock_data/recordings/*_RAW*.mp4
+mock_data/recordings/*.ffmpeg.log

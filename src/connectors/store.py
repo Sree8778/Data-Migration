@@ -18,11 +18,14 @@ from pathlib import Path
 from typing import Any, Optional
 
 from src.connectors.base import ConnectionSpec, ConnectorError
+from src.connectors.firestore import GOOGLE_HOST, LOOPBACK
 from src.connectors.registry import ALL_KINDS, info
 
 NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 HOST = re.compile(r"^[A-Za-z0-9_.:\-\[\]]{1,253}$")
 ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\-:.]{3,98}$")
+DATABASE_ID = re.compile(r"^(\(default\)|[a-z][a-z0-9-]{2,61}[a-z0-9])$")
 def _to_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -39,6 +42,10 @@ SSL_MODES = ("disable", "allow", "prefer", "require", "verify-ca", "verify-full"
 # The *file* options name a CA bundle on the SERVER; they are only ever used to verify the database's certificate.
 ALLOWED_OPTIONS = {"connect_timeout": int, "sslmode": str, "sslrootcert": str, "ssl_ca": str, "cafile": str, "encrypt": _to_bool, "validate_host": _to_bool,
                    "ssl": _to_bool, "ssl_verify": _to_bool,
+                   # MongoDB: the database the user is defined in, TLS on/off, and a CA bundle on the SERVER to verify the server certificate
+                   "auth_source": str, "tls": _to_bool, "tls_ca_file": str,
+                   # Firestore: the database inside the Firebase project ("(default)" unless the project has several)
+                   "database_id": str,
                    # file storage: https / path_style (emulators, MinIO), auth = key | sas (Azure), region (S3), host_key_sha256 (SFTP: the pinned server key)
                    "https": _to_bool, "path_style": _to_bool, "auth": str, "region": str, "host_key_sha256": str}
 
@@ -79,13 +86,16 @@ class ConnectionStore:
         host = str(data.get("host", "")).strip()
         user = str(data.get("user", "")).strip()
         database = str(data.get("database", "")).strip()
+        if dialect == "firestore":                                      # the real service has one address and the key says who it is: only the project ID has to be typed
+            host = host or GOOGLE_HOST
+            user = user or "service-account"
         if not NAME.match(name):
             raise ConnectionInputError("name must be 1-64 letters, digits, '.', '_' or '-'")
         if dialect not in ALL_KINDS:
             raise ConnectionInputError(f"connection type must be one of: {', '.join(ALL_KINDS)}")
         if not HOST.match(host):
             raise ConnectionInputError("host must be a host name or IP address (no spaces, paths or URLs)")
-        if self._allowed is not None and host.lower() not in self._allowed:
+        if self._allowed is not None and host.lower() not in self._allowed and not (dialect == "firestore" and host.lower() == GOOGLE_HOST):
             raise ConnectionInputError(f"host '{host}' is not on this server's allowed list (MIGRATION_DB_ALLOWED_HOSTS)")
         try:
             port = int(data.get("port") or info(dialect).default_port)
@@ -101,7 +111,7 @@ class ConnectionStore:
         if role not in ("source", "target"):
             raise ConnectionInputError("role must be 'source' or 'target'")
         default_schema = str(data.get("default_schema") or "").strip() or None
-        if default_schema and not re.match(r"^[A-Za-z_][A-Za-z0-9_$#]{0,127}$", default_schema):
+        if default_schema and not re.match(r"^[A-Za-z_][A-Za-z0-9_$#]{0,127}$", default_schema) and not (dialect == "firestore" and DATABASE_ID.match(default_schema)):
             raise ConnectionInputError("the default schema is not a valid schema name")
         env_name = str(data.get("password_env") or "").strip() or None
         if env_name and not ENV.match(env_name):
@@ -114,6 +124,16 @@ class ConnectionStore:
                 options[key] = ALLOWED_OPTIONS[key](value)
             except (TypeError, ValueError):
                 raise ConnectionInputError(f"option '{key}' has an invalid value") from None
+        if dialect == "mongodb" and role == "target":
+            raise ConnectionInputError("MongoDB can only be a source: data is read from it, never written to it")
+        if dialect == "firestore":
+            if not PROJECT_ID.match(database):
+                raise ConnectionInputError("the Firebase project ID is required (for example my-app-1234: Firebase console > Project settings)")
+            if host.lower() != GOOGLE_HOST and host.lower() not in LOOPBACK:
+                raise ConnectionInputError(f"host must be {GOOGLE_HOST} (the real service) or localhost / 127.0.0.1 (the Firestore emulator)")
+            database_id = options.get("database_id")
+            if database_id is not None and not DATABASE_ID.match(database_id):
+                raise ConnectionInputError("database_id must be (default) or the ID of a Firestore database in the project (lower-case letters, digits and '-')")
         if "auth" in options and options["auth"] not in ("key", "sas"):
             raise ConnectionInputError("auth must be 'key' or 'sas'")
         if "host_key_sha256" in options and options["host_key_sha256"] and not re.match(r"^SHA256:[A-Za-z0-9+/]{43}$", options["host_key_sha256"]):
@@ -192,6 +212,8 @@ class ConnectionStore:
                 password = self._passwords.get(name)
         if password is None and record.password_env:
             password = self._env.get(record.password_env)
+        if password is None and record.dialect == "firestore" and record.host.lower() in LOOPBACK:
+            password = ""                                          # the Firestore emulator needs no key
         if password is None:
             raise ConnectorError(f"no password is available for connection '{name}': enter it again (it is kept in memory only) or set the environment variable named in password_env")
         return ConnectionSpec(dialect=record.dialect, host=record.host, port=record.port, database=record.database, user=record.user, password=password, options=dict(record.options))

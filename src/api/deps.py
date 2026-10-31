@@ -10,12 +10,15 @@ caller, never a name taken from a request body.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
+from dataclasses import dataclass
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, Request
 
 from src.api.context import AppContext
+from src.api.settings import ROLES
 
 ANONYMOUS = "anonymous"
 
@@ -24,20 +27,46 @@ def get_ctx(request: Request) -> AppContext:
     return request.app.state.ctx
 
 
-def identify(
+@dataclass(frozen=True)
+class Principal:
+    """Who is calling, and what they are allowed to be: the roles of their API key (every role in dev-header mode)."""
+
+    user: str
+    roles: frozenset
+    auth: str  # "api-key" | "dev-header"
+
+
+def _key_matches(stored: str, presented: str) -> bool:
+    if stored.startswith("sha256="):   # the environment holds only the hash of the key
+        return hmac.compare_digest(stored[7:].strip().lower(), hashlib.sha256(presented.encode()).hexdigest())
+    return hmac.compare_digest(stored.encode(), presented.encode())
+
+
+def principal(
+    request: Request,
     ctx: AppContext = Depends(get_ctx),
     x_api_key: Optional[str] = Header(default=None),
     x_user: Optional[str] = Header(default=None),
-) -> str:
+) -> Principal:
     keys = ctx.settings.api_keys
     if keys:
         if not x_api_key:
             raise HTTPException(401, "X-API-Key header required", headers={"WWW-Authenticate": "ApiKey"})
+        found = None
         for key, user in keys.items():
-            if hmac.compare_digest(key.encode(), x_api_key.encode()):
-                return user
-        raise HTTPException(401, "invalid API key", headers={"WWW-Authenticate": "ApiKey"})
-    return (x_user or "").strip() or ANONYMOUS
+            if _key_matches(key, x_api_key):
+                found = Principal(user, frozenset(ctx.settings.key_roles.get(key) or ROLES), "api-key")
+                break
+        if found is None:
+            raise HTTPException(401, "invalid API key", headers={"WWW-Authenticate": "ApiKey"})
+    else:
+        found = Principal((x_user or "").strip() or ANONYMOUS, frozenset(ROLES), "dev-header")
+    request.state.principal = found   # the audit trail reads it after the call
+    return found
+
+
+def identify(who: Principal = Depends(principal)) -> str:
+    return who.user
 
 
 def require_user(user: str = Depends(identify)) -> str:

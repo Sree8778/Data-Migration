@@ -8,6 +8,7 @@ target column one "failure kind" is derived per row, in priority order:
     CONVERSION     Module 4 recorded CONVERSION_FAILED
     MANDATORY      mandatory target is NULL / empty / whitespace
     CHECKTABLE     value is not a key of the target's check table (domain provider)
+    FORMAT         value is filled but not shaped like an e-mail address / IBAN (FORMAT_PATTERNS)
 
 Module 4 turns a failing cell into NULL and writes the cause to `_TRANSFORM_ERRORS`; reading both
 means the true cause is reported (a too-long name is LENGTH, not a confusing MANDATORY).
@@ -39,8 +40,14 @@ from src.schemas.validation import (
 from src.services._duckdb_util import DEFAULT_MEMORY_LIMIT_MB, bounded_connection, lit, q
 from src.services.domain_provider import DomainProvider, default_domain_provider
 from src.services.metadata_service import NotFoundError
-from src.services.transformation_engine import ERRORS_COLUMN, PK_COLUMN, _type_spec  # Module 4 conventions
+from src.services.transformation_engine import (  # Module 4 conventions
+    CATEGORY_KEY, ERRORS_COLUMN, PERSON_CATEGORY, PK_COLUMN, REQUIRED_FOR_PERSON, REQUIRED_UNLESS_PERSON, _type_spec)
 
+# Fields whose value must have a recognisable shape (a regular expression the whole value has to match). Checked only when the value is filled.
+FORMAT_PATTERNS: dict[tuple[str, str], str] = {
+    ("ADR6", "SMTP_ADDR"): r"[^@\s]+@[^@\s]+\.[^@\s]+",
+    ("BUT0BK", "IBAN"): r"[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}",
+}
 DUPLICATE_COLUMN = "is_duplicate_child"
 VALIDATION_ERRORS_COLUMN = "_VALIDATION_ERRORS"
 _SAMPLE_SIZE = 5
@@ -59,6 +66,8 @@ class _Spec:
     check_table: Optional[str]
     domain: Optional[frozenset[str]] = None
     name_part: str = ""
+    pattern: Optional[str] = None
+    category: Optional[str] = None  # staging column holding the BP category, when the mapping has one (names depend on it)
 
     @property
     def target(self) -> str:
@@ -154,8 +163,11 @@ class ValidationEngine:
                     mandatory=bool(col.is_mandatory or rule.is_mandatory_target),
                     kind_of_type=ts.kind,
                     max_len=ts.max_len if ts.kind in ("string", "numc") else None,
-                    check_table=col.check_table,
+                    check_table=col.check_table, pattern=FORMAT_PATTERNS.get((table.table_name, col.column_name)),
                 ))
+        category = next((s.staging for s in specs if (s.table, s.column) == CATEGORY_KEY), None)
+        for s in specs:
+            s.category = category
         names = [s.column for s in specs]
         for s in specs:  # table-qualify only when the bare column name is ambiguous
             s.name_part = f"{s.table}_{s.column}" if names.count(s.column) > 1 else s.column
@@ -201,8 +213,14 @@ class ValidationEngine:
             length += f" OR length({v}) > {s.max_len}"
         whens.append(f"WHEN {length} THEN '{FailureKind.LENGTH.value}'")
         whens.append(f"WHEN {seen('CONVERSION_FAILED')} THEN '{FailureKind.CONVERSION.value}'")
-        if s.mandatory:
-            whens.append(f"WHEN {c} IS NULL OR trim({v}) = '' THEN '{FailureKind.MANDATORY.value}'")
+        person = f"coalesce(trim(CAST({q(s.category)} AS VARCHAR)) = '{PERSON_CATEGORY}', false)" if s.category else None
+        if (s.table, s.column) in REQUIRED_FOR_PERSON and person:
+            whens.append(f"WHEN ({c} IS NULL OR trim({v}) = '') AND {person} THEN '{FailureKind.MANDATORY.value}'")
+        elif s.mandatory:
+            unless = f" AND NOT {person}" if person and (s.table, s.column) in REQUIRED_UNLESS_PERSON else ""
+            whens.append(f"WHEN ({c} IS NULL OR trim({v}) = ''){unless} THEN '{FailureKind.MANDATORY.value}'")
+        if s.pattern:
+            whens.append(f"WHEN {c} IS NOT NULL AND trim({v}) <> '' AND NOT regexp_full_match(trim({v}), {lit(s.pattern)}) THEN '{FailureKind.FORMAT.value}'")
         if s.domain is not None:
             whens.append(
                 f"WHEN {c} IS NOT NULL AND trim({v}) <> '' AND {v} NOT IN (SELECT v FROM \"dom_{s.idx}\") "

@@ -20,6 +20,7 @@ class FailureKind(str, enum.Enum):
     LENGTH = "LENGTH"  # string longer than the target's char_max_length (truncation risk)
     CONVERSION = "CONVERSION"  # value could not be converted to the target data type
     CHECKTABLE = "CHECKTABLE"  # value is not in the target's check-table domain
+    FORMAT = "FORMAT"  # value does not have the shape the field needs (an e-mail address, an IBAN)
 
 
 class Severity(str, enum.Enum):
@@ -37,6 +38,7 @@ SEVERITY_BY_KIND: dict[FailureKind, Severity] = {
     FailureKind.LENGTH: Severity.HIGH,
     FailureKind.CONVERSION: Severity.HIGH,
     FailureKind.CHECKTABLE: Severity.HIGH,
+    FailureKind.FORMAT: Severity.HIGH,
 }
 
 ROOT_CAUSE_BY_KIND: dict[FailureKind, str] = {
@@ -58,6 +60,10 @@ ROOT_CAUSE_BY_KIND: dict[FailureKind, str] = {
     FailureKind.CHECKTABLE: (
         "The value is not a valid key of the SAP check table for this field, so SAP would reject it. "
         "Map the legacy value to a valid key."
+    ),
+    FailureKind.FORMAT: (
+        "The value does not have the shape SAP expects for this field (for example an e-mail address without an @, or an IBAN with the wrong layout). "
+        "Correct it in the source or in the transformation."
     ),
 }
 

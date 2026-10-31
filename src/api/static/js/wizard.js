@@ -10,6 +10,8 @@
   function open(def) {
     wz = Object.assign({ i: 0, busy: false, showHelp: false }, def, { state: def.init() });
     $("#wz-title").textContent = def.title;
+    dlg.classList.toggle("has-guide", !!def.guide);
+    if (def.guide && guide) guide.reset();
     showError("");
     renderStep();
     if (!dlg.open) dlg.showModal();
@@ -31,6 +33,7 @@
     body.innerHTML = ""; body.classList.remove("wz-busy");   // a previous wizard's Finish must not leave the body unclickable
     step.render(body, wz.state, wz);
     refreshNav();
+    syncGuide();
   }
 
   function refreshNav() {
@@ -112,8 +115,9 @@
         (p.delimiter ? ", delimiter " + (p.delimiter === "\t" ? "tab" : p.delimiter) : "") + " - " + p.columns.length + " columns";
       if (!st.table) st.table = defaultTableName(st.file.name);
       statusEl.className = "wz-status ok"; statusEl.textContent = "Test succeeded: " + st.detected + (p.warnings.length ? " (" + p.warnings.length + " warning(s))" : "");
+      st.lastError = "";
     } catch (e) {
-      st.preview = null;
+      st.preview = null; st.lastError = e.message;
       statusEl.className = "wz-status bad"; statusEl.textContent = e.message;
     }
     if (then) then();
@@ -241,7 +245,7 @@
   ];
 
   // ------------------------------------------------------------------ database sources
-  const DRIVERS = { azure_blob: "azure-storage-blob (Blob endpoint; Data Lake Gen2 works through it)", s3: "boto3 (any S3-compatible service)", sftp: "paramiko (host key must be confirmed)", postgresql: "psycopg2 (native PostgreSQL driver)", oracle: "python-oracledb (thin mode, no Oracle client needed)", mssql: "python-tds (TDS protocol, no ODBC driver needed)", mysql: "PyMySQL" };
+  const DRIVERS = { azure_blob: "azure-storage-blob (Blob endpoint; Data Lake Gen2 works through it)", s3: "boto3 (any S3-compatible service)", sftp: "paramiko (host key must be confirmed)", postgresql: "psycopg2 (native PostgreSQL driver)", oracle: "python-oracledb (thin mode, no Oracle client needed)", mssql: "python-tds (TDS protocol, no ODBC driver needed)", mysql: "PyMySQL", firestore: "google-cloud-firestore (one document = one row; sub-collections are not followed; Firestore bills one read per document)", mongodb: "pymongo (documents are flattened into rows; read-only)" };
   const enc = encodeURIComponent;
   const newConn = () => ({ host: "", port: "", database: "", user: "", password: "", password_env: "", timeout: "", opts: {} });
 
@@ -250,6 +254,9 @@
     if (c.timeout) options.connect_timeout = Number(c.timeout);
     Object.entries(c.opts || {}).forEach(([k, v]) => { if (v !== "" && v !== undefined && v !== null) options[k] = v; });   // encryption settings per database
     const d = st.dialects.find((x) => x.dialect === st.kind) || {};
+    if (st.kind === "firestore") {          // the real service has one address and the key says who it is: only the project ID has to be typed
+      return { dialect: st.kind, host: c.host.trim() || "firestore.googleapis.com", port: c.port ? Number(c.port) : d.default_port, database: c.database.trim(), user: c.user.trim() || "service-account", options };
+    }
     return { dialect: st.kind, host: c.host.trim(), port: c.port ? Number(c.port) : d.default_port, database: c.database.trim(), user: c.user.trim(), options };
   }
 
@@ -272,6 +279,14 @@
         prop("ssl_ca", "CA certificate file", file("ssl_ca", "(public CA bundle)"), "PEM file on the server with the CA that signed the database certificate.") +
         prop("ssl_verify", "Verify certificate", box("ssl_verify", true), "Check the certificate and host name. Switch off only for a throw-away test server.");
     }
+    if (st.kind === "firestore") {
+      return prop("database_id", "Firestore database", file("database_id", "(default)"), "Only if the project has more than one Firestore database. Leave empty for the default one.");
+    }
+    if (st.kind === "mongodb") {
+      return prop("auth_source", "Authentication database", file("auth_source", "(defaults to the database above)"), "The database the user is defined in (often admin). Leave empty to use the database above.") +
+        prop("tls", "Use TLS", box("tls", false), "Encrypt the connection (MongoDB Atlas and most managed services require it).") +
+        prop("tls_ca_file", "CA certificate file", file("tls_ca_file", "(public CA bundle)"), "PEM file on the server with the CA that signed the database certificate.");
+    }
     return "";
   }
 
@@ -286,24 +301,33 @@
   const STORAGE_KINDS = ["azure_blob", "s3", "sftp"];
   const isStorage = (st) => STORAGE_KINDS.includes(st.kind);
   const storageOptions = (st) => st.dialects.filter((d) => d.family === "storage").map((d) => '<option value="' + esc(d.dialect) + '"' + (st.kind === d.dialect ? " selected" : "") + ">" + esc(d.label) + "</option>").join("");
-  const kindOptions = (st, selected) => st.dialects.filter((d) => d.family !== "storage").map((d) => '<option value="' + esc(d.dialect) + '"' + (!st.preset && selected === d.dialect ? " selected" : "") + ">" + esc(d.label) + "</option>").join("") +
+  const SOURCE_ONLY = ["mongodb"];          // MongoDB is read, never written (Firestore can receive a delivery as well)
+  const kindOptions = (st, selected, forTarget) => st.dialects.filter((d) => d.family !== "storage" && !(forTarget && SOURCE_ONLY.includes(d.dialect))).map((d) => '<option value="' + esc(d.dialect) + '"' + (!st.preset && selected === d.dialect ? " selected" : "") + ">" + esc(d.label) + "</option>").join("") +
     ((st.presets || []).length ? "</optgroup><optgroup label=\"Cloud databases\">" + st.presets.map((p) => '<option value="preset:' + esc(p.id) + '"' + (st.preset === p.id ? " selected" : "") + ">" + esc(p.label) + "</option>").join("") : "");
 
   const dbConnectionStep = {
     label: "Set connection", desc: "Specify the connection parameters for the source database. Test must succeed before you continue.",
     help: "Use a read-only account: the server never writes to a source, but a read-only account makes that a guarantee. The password is held in the server's memory only (or read from the environment variable you name) and is never stored or shown again.",
     render(el, st) {
-      const d = st.dialects.find((x) => x.dialect === st.kind) || { default_port: "", database_label: "Database" };
+      const d = st.dialects.find((x) => x.dialect === st.kind) || { default_port: "", database_label: "Database" }, fs = st.kind === "firestore";
       const prop = (key, label, control, help) => '<tr data-key="' + key + '" data-help="' + esc(label + "|" + help) + '"><td>' + esc(label) + "</td><td>" + control + "</td></tr>";
       const text = (id, value, ph, type) => '<input type="' + (type || "text") + '" id="' + id + '" value="' + esc(value) + '" placeholder="' + esc(ph || "") + '" autocomplete="off" spellcheck="false">';
       el.innerHTML = '<div class="pg-wrap"><table class="pg"><tbody><tr class="grp"><td colspan="2">&#9662; Required</td></tr>' +
+        (fs ? (
+        prop("database", "Project ID", text("c-database", st.conn.database, "my-app-1234"), "Firebase console > Project settings > Project ID. It is filled in for you when you load the key file.") +
+        prop("keyfile", "Key file", '<button type="button" class="wz-btn" id="c-keyfile">Load key file...</button><input type="file" id="c-keyinput" accept=".json,application/json" hidden>', "Google Cloud console > IAM & Admin > Service accounts > Keys > Add key > JSON. The file is read in your browser and sent to this server's memory only. Give the service account only the Cloud Datastore Viewer role.") +
+        prop("password", "Service-account key", '<textarea id="c-password" class="mask" rows="3" spellcheck="false" autocomplete="off" placeholder="Paste the whole key file here, or press Load key file">' + esc(st.conn.password) + "</textarea>", "The content of the key file. Kept in server memory only; never stored or displayed again.") +
+          "") : (
         prop("host", "Server", text("c-host", st.conn.host, "db.company.local"), "Host name or IP address of the database server.") +
         prop("port", "Port", text("c-port", st.conn.port, String(d.default_port), "number"), "Leave empty for the default (" + d.default_port + ").") +
         prop("database", d.database_label, text("c-database", st.conn.database, st.kind === "oracle" ? "ORADB1" : ""), st.kind === "oracle" ? "The Oracle service name." : "The database to connect to.") +
         prop("user", "User ID", text("c-user", st.conn.user, "read-only account"), "A read-only account is strongly recommended.") +
-        prop("password", "Password", text("c-password", st.conn.password, "", "password").replace('autocomplete="off"', 'autocomplete="new-password"'), "Kept in server memory only; never stored or displayed.") +
+        prop("password", "Password", text("c-password", st.conn.password, "", "password").replace('autocomplete="off"', 'autocomplete="new-password"'), "Kept in server memory only; never stored or displayed."))) +
         '<tr class="grp"><td colspan="2">&#9662; Optional</td></tr>' +
-        prop("password_env", "Password variable", text("c-env", st.conn.password_env, "e.g. LEGACY_DB_PASSWORD"), "Instead of typing a password: the name of an environment variable on the server that holds it. It survives a server restart.") +
+        (fs ? prop("host", "Server (emulator only)", text("c-host", st.conn.host, "firestore.googleapis.com"), "Leave empty for Google. Only the Firestore emulator on this computer (localhost) is accepted instead.") +
+          prop("port", "Port (emulator only)", text("c-port", st.conn.port, "443", "number"), "Leave empty for Google.") +
+          prop("user", "Service account", text("c-user", st.conn.user, "filled in from the key file"), "The service account's e-mail. Informational: the key itself says who it is.") : "") +
+        prop("password_env", fs ? "Key variable" : "Password variable", text("c-env", st.conn.password_env, "e.g. LEGACY_DB_PASSWORD"), "Instead of typing a password: the name of an environment variable on the server that holds it. It survives a server restart.") +
         prop("timeout", "Connection timeout (s)", text("c-timeout", st.conn.timeout, "10", "number"), "Seconds to wait for the server before giving up.") +
         tlsRows(st, prop) +
         "</tbody></table></div>" +
@@ -321,12 +345,30 @@
         el.querySelectorAll("tr.sel").forEach((x) => x.classList.remove("sel")); tr.classList.add("sel");
         const [title, textHelp] = tr.dataset.help.split("|"); $("#pg-help").innerHTML = "<strong>" + esc(title) + "</strong>" + esc(textHelp);
       }));
+      const pick = $("#c-keyfile");
+      if (pick) {
+        const input = $("#c-keyinput");
+        pick.addEventListener("click", () => input.click());
+        input.addEventListener("change", async () => {
+          const file = input.files && input.files[0];
+          if (!file) return;
+          const status = $("#c-status");
+          try {
+            const text = await file.text(), key = JSON.parse(text);
+            if (key.type !== "service_account" || !key.private_key) throw new Error("That file is not a service-account key (in the Google Cloud console create a key of type JSON for a service account)");
+            st.conn.password = text; st.conn.database = key.project_id || st.conn.database; st.conn.user = key.client_email || st.conn.user;
+            st.dbtest = null; st.connSaved = false; renderStep();
+          } catch (e) { status.className = "wz-status bad"; status.textContent = e instanceof SyntaxError ? "That file is not valid JSON" : e.message; }
+        });
+      }
       $("#c-test").addEventListener("click", async () => {
         const status = $("#c-status"); status.className = "wz-status"; status.textContent = "Connecting...";
         $("#c-test").disabled = true;
         try {
           const body = connBody(st);
-          if (!st.conn.password && !st.conn.password_env) throw new Error("Enter a password, or the name of a server environment variable that holds it");
+          const emulator = st.kind === "firestore" && ["localhost", "127.0.0.1"].includes(body.host.toLowerCase());
+          if (!st.conn.password && !st.conn.password_env && !emulator) throw new Error(st.kind === "firestore" ? "Load the service-account key file (or paste its content), or name a server environment variable that holds it" : "Enter a password, or the name of a server environment variable that holds it");
+          if (st.kind === "firestore" && !st.conn.database.trim()) throw new Error("Enter the Firebase project ID");
           st.dbtest = await api("POST", "/api/connections/test", Object.assign({}, body, { password: st.conn.password || undefined, password_env: st.conn.password_env.trim() || undefined }));
           if (st.dbtest.ok) {
             const existing = (await api("GET", "/api/connections")).some((c) => c.name === st.name.trim());
@@ -524,6 +566,7 @@
             '<svg class="ic"><use href="#i-folder"/></svg> ' + esc(sc) + '</div><div class="tbls' + (open ? "" : " hidden") + '">' + (open ? tableRows(sc) : "") + "</div></div>";
         }).join("") || '<p class="muted">This account cannot see any schema.</p>';
         count();
+        if (typeof tablesDrawn === "function") tablesDrawn();       // the guide can only suggest a table once the list is on the screen
       };
       const loadTables = async (schema) => {
         st.tablesBySchema[schema] = await api("GET", "/api/connections/" + enc(name) + "/tables?schema_name=" + enc(schema) + "&filter=" + enc(st.filter));
@@ -653,7 +696,7 @@
   async function openSource() {
     const dialects = (await run(() => api("GET", "/api/connections/dialects"))) || [];
     const presets = (await run(() => api("GET", "/api/connections/presets"))) || [];
-    open({ title: "Add Source Connection Wizard", steps: sourceSteps, finish: (st) => (st.kind === "file" ? finishSource(st) : isStorage(st) ? finishStorage(st) : finishDb(st)),
+    open({ title: "Add Source Connection Wizard", steps: sourceSteps, guide: true, finish: (st) => (st.kind === "file" ? finishSource(st) : isStorage(st) ? finishStorage(st) : finishDb(st)),
       cancel: async (st) => {                                  // a connection saved for browsing is removed again if the wizard is abandoned
         st.conn.password = "";
         for (const n of st.createdNames) {
@@ -741,7 +784,7 @@
   const dbTargetProvider = (el, st) => {
     el.innerHTML = '<fieldset><legend>Target name</legend>' + row("Name:", '<input type="text" id="g-name" maxlength="64" value="' + esc(st.name) + '" autocomplete="off">', "Letters, digits, '.', '_' and '-'.") + "</fieldset>" +
       '<fieldset><legend>Data Provider(s)</legend>' +
-      row("Database:", '<select id="g-dialect"><optgroup label="Databases">' + kindOptions(st, st.kind) + "</optgroup></select>") +
+      row("Database:", '<select id="g-dialect"><optgroup label="Databases">' + kindOptions(st, st.kind, true) + "</optgroup></select>") +
       row("Provider:", '<input type="text" readonly value="' + esc(DRIVERS[st.kind] || "") + '">', "Use an account that may create tables in one schema. Nothing is ever dropped except a table this application created and you chose to replace.") + "</fieldset>";
     $("#g-name").addEventListener("input", (e) => { st.name = e.target.value; st.dbtest = null; st.connSaved = false; st.writeTest = null; refreshNav(); });
     $("#g-dialect").addEventListener("change", (e) => { applyPreset(st, e.target.value); st.dbtest = null; st.connSaved = false; st.writeTest = null; renderStep(); });
@@ -844,5 +887,66 @@
         createdNames: [], finished: false, schema: "", schemas: null, writeTest: null }) });
   }
 
-  window.Wizards = { source: openSource, target: openTarget };
+  // ================================================================== the setup guide beside the Add Source wizard
+  // It is told what the step holds (never the password), says what the step needs, explains a failed test, and fills the form in from what the person typed.
+  const STEP_KEYS = ["provider", "connection", "tables", "options", "summary"];
+  let guide = null;
+  function guideContext() {
+    if (!wz || !wz.guide) return { step: "start" };
+    const st = wz.state, c = st.conn || {}, step = STEP_KEYS[wz.i] || "summary";
+    const tables = [];
+    Object.keys(st.tablesBySchema || {}).forEach((sc) => (st.tablesBySchema[sc] || []).forEach((t) => tables.push({ name: sc + "." + t.name, rows: t.row_estimate === undefined ? null : t.row_estimate, kind: t.kind || "" })));
+    const error = st.kind === "file" ? (st.lastError || "") : (st.dbtest && !st.dbtest.ok ? st.dbtest.detail || "" : "");
+    return { step, key: step + ":" + (st.kind || ""), kind: st.kind || "file", error: error.slice(0, 600), file_name: st.file ? st.file.name : "", tables: tables.slice(0, 300),
+      fields: { name: st.name || "", kind: st.kind || "", host: c.host || "", port: c.port || "", database: c.database || "", user: c.user || "", file: st.file ? st.file.name : "",
+        detected: st.kind === "file" && st.preview ? st.detected || "" : "", tables: (st.selected && st.selected.size) || (st.selectedFiles && st.selectedFiles.size) ? "yes" : "" } };
+  }
+  function syncGuide() {
+    if (!guide || !wz || !wz.guide) return;
+    const c = guideContext(), seen = (wz.guided = wz.guided || { error: "", detected: "" });
+    if (c.error && c.error !== seen.error) { seen.error = c.error; guide.forceRefresh(); return; }
+    if (!c.error) seen.error = "";
+    if (c.fields.detected && c.fields.detected !== seen.detected) { seen.detected = c.fields.detected; guide.forceRefresh(); return; }
+    guide.refresh();
+  }
+  function tablesDrawn() {
+    if (!guide || !wz || !wz.guide || wz.i !== 2) return;
+    const names = Object.keys(wz.state.tablesBySchema || {}).flatMap((sc) => (wz.state.tablesBySchema[sc] || []).map((t) => sc + "." + t.name)).join(",");
+    const seen = (wz.guided = wz.guided || { error: "", detected: "" });
+    if (names && names !== seen.tables) { seen.tables = names; guide.forceRefresh(); }
+  }
+  function applyFill(fill) {
+    if (!wz || !wz.guide) return;
+    const st = wz.state, c = st.conn;
+    let kindChanged = false;
+    if (fill.kind && fill.kind !== st.kind && !(st.dbtest && st.dbtest.ok)) {
+      if (fill.kind === "file") { st.kind = "file"; st.preset = null; } else applyPreset(st, fill.kind);
+      st.preview = null; st.dbtest = null; st.connSaved = false; kindChanged = true;
+    }
+    if (fill.name) st.name = fill.name;
+    let touched = false;
+    ["host", "port", "database", "user"].forEach((k) => { if (fill[k] !== undefined) { c[k] = fill[k]; touched = true; } });
+    if (touched) { st.dbtest = null; st.connSaved = false; }
+    if (kindChanged && wz.i > 1) wz.i = 1;                           // the provider changed: back to the connection details of the new one
+    if (fill.pick_tables && wz.i === 2) {                            // the list is already on the screen: tick in place, do not redraw it
+      fill.pick_tables.split(",").forEach((full) => {
+        const [schema, ...rest] = full.split("."), table = rest.join(".");
+        const box = document.querySelector('#wz-body input[data-schema="' + schema + '"][data-table="' + table + '"]');
+        if (box && !box.checked && !box.disabled) { box.checked = true; box.dispatchEvent(new Event("change", { bubbles: true })); }
+      });
+      return;
+    }
+    renderStep();
+  }
+  async function attachFile(file) {
+    if (!wz || !wz.guide) { await openSource(); }
+    const st = wz.state;
+    st.kind = "file"; st.preset = null; st.file = file; st.preview = null; st.table = ""; st.keys = new Set(); st.lastError = "";
+    if (!st.name.trim()) st.name = defaultTableName(file.name);
+    wz.i = 1; showError(""); renderStep();
+    await readFile(st, $("#p-status"), () => renderStep());
+  }
+  guide = window.Guide && $("#wz-guide") ? Guide.mount($("#wz-guide"), { context: guideContext, onFill: applyFill, onFile: attachFile }) : null;
+
+  window.Wizards = { source: openSource, target: openTarget, attachFile, fill: (f) => { if (wz && wz.guide) applyFill(f); }, openSourceWith: async (fill, file) => { await openSource(); if (fill) applyFill(fill); if (file) await attachFile(file); } };
 })();

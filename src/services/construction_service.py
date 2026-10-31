@@ -70,7 +70,7 @@ from src.services.validation_engine import DUPLICATE_COLUMN, ValidationEngine
 
 CONSTRUCTIBLE_KINDS = ("MANDATORY", "LOOKUP_FAILED")
 # Identifiers SAP or the loader generates (never constructed by hand); other key fields such as BUKRS / VKORG are not exempt.
-GENERATED_KEYS = ("PARTNER", "KUNNR", "ADDRNUMBER", "RLTYP")
+GENERATED_KEYS = ("PARTNER", "KUNNR", "LIFNR", "ADDRNUMBER", "RLTYP")
 DATA_SHEET, README_SHEET, LISTS_SHEET, META_SHEET = "Construction", "Instructions", "_Lists", "_META"
 H_PK, H_ROW, H_ISSUES = "SOURCE_PK", "ROW_REF", "OTHER_ISSUES"
 CONTEXT_PREFERENCE = ["BUT000_NAME_ORG1", "BUT000_NAME_ORG2", "ADRC_STREET", "ADRC_CITY1", "ADRC_COUNTRY", "ADRC_POST_CODE1"]

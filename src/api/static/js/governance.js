@@ -83,9 +83,14 @@
     const targets = (await run(() => api("GET", "/api/connections?role=target"))) || [];
     $("#db-conn").innerHTML = targets.map((t) => '<option value="' + esc(t.name) + '">' + esc(t.name + " (" + t.label + (t.default_schema ? ", " + t.default_schema : "") + ")") + "</option>").join("");
     const none = !targets.length;
+    const chosen = await run(async () => {                            // the destination the mapping set was pointed at is the one to deliver to
+      const d = await api("GET", "/api/defects/" + runId);
+      return await api("GET", "/api/mapping/" + d.readiness.mapping_set_id + "/target").catch(() => null);
+    });
+    if (chosen && chosen.connection && targets.some((t) => t.name === chosen.connection)) $("#db-conn").value = chosen.connection;
     ["db-conn", "db-schema", "db-table", "db-mode", "db-src", "db-preview", "db-load"].forEach((id) => { $("#" + id).disabled = none; });
-    $("#db-hint").textContent = none ? "No database target yet. Use New Target in the console to add an Oracle, SQL Server, PostgreSQL or MySQL target." :
-      "Creates a new table in the chosen database with the validated records. Same gate as every load: steward sign-off and no open critical defects.";
+    $("#db-hint").textContent = none ? "No database target yet. Use New Target in the console to add an Oracle, SQL Server, PostgreSQL, MySQL or Google Firebase (Firestore) target." :
+      "Creates a new table (Firestore: a new collection) in the chosen database with the validated records. Same gate as every load: steward sign-off and no open critical defects.";
     const done = (await run(() => api("GET", "/api/pipeline/load-db/" + runId))) || [];
     $("#db-history").innerHTML = done.length ? App.table(["Delivered", "Target", "Table", "Rows sent", "Rows counted in target", "Values", "By", ""], done.map((d, i) => {
       const last = d.verifications.length ? d.verifications[d.verifications.length - 1] : null;
@@ -128,11 +133,15 @@
     if (b.schema_name) q.set("schema_name", b.schema_name);
     const p = await api("GET", "/api/pipeline/load-db/" + runId + "/preview?" + q.toString());
     $("#db-ddl").textContent = "-- " + p.rows + " row(s) into " + p.schema_name + "." + p.table + "\n" + p.ddl; $("#db-ddl").classList.remove("hidden");
+    const LEVEL = { block: ["red", "stops the delivery"], warn: ["amber", "warning"], info: ["gray", "will happen"] };
+    $("#db-checks").innerHTML = (p.checks || []).map((c) => "<li>" + badge(LEVEL[c.level][0], LEVEL[c.level][1]) + " " + esc(c.message) +
+      (c.next_step ? '<div class="what-to-do"><strong>What to do:</strong> ' + esc(c.next_step) + "</div>" : "") + "</li>").join("");
+    $("#db-checks").classList.toggle("hidden", !(p.checks || []).length);
   }));
   $("#db-load").addEventListener("click", () => run(async () => {
     const r = await api("POST", "/api/pipeline/load-db/" + runId, dbBody());
     App.toast(num(r.rows_loaded) + " record(s) delivered to " + r.schema_name + "." + r.table + " (" + r.dialect + "); " + num(r.rows_in_target) + " counted in the target");
-    $("#db-ddl").classList.add("hidden"); loadDbPanel(); load();
+    $("#db-ddl").classList.add("hidden"); $("#db-checks").classList.add("hidden"); loadDbPanel(); load();
   }));
   loadDbPanel();
   loadDeltaPanel();

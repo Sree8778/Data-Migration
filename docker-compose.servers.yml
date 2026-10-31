@@ -134,3 +134,33 @@ services:
     command: ["legacy:Legacy_pw_Test1:::incoming"]
     ports: ["12222:22"]
     mem_limit: 128m
+
+  # ---- a document database.  docker compose -f docker-compose.servers.yml --profile mongo up -d --wait
+  mongo:
+    image: mongo:7
+    profiles: ["mongo"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: Mongo_root_Test1
+    volumes:
+      - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    ports: ["27018:27017"]
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+
+  # ---- Google Firestore (the document database behind Firebase), the official emulator.  docker compose -f docker-compose.servers.yml --profile firestore up -d --wait
+  firestore:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+    profiles: ["firestore"]
+    command: ["gcloud", "emulators", "firestore", "start", "--host-port=0.0.0.0:8080", "--project=demo-erp"]
+    ports: ["18080:8080"]
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 40

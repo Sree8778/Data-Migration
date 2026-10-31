@@ -148,3 +148,80 @@ td .mono.clip { max-width: 300px; }
 .findings { list-style: none; margin: 6px 0 0; padding: 0; }
 .findings li { padding: 3px 0; border-top: 1px solid var(--edge); }
 .findings li:first-child { border-top: 0; }
+
+/* AI assistant */
+.ask-row { display: flex; gap: 8px; margin: 6px 0; } .ask-row input { flex: 1; }
+.answer { background: var(--card); }
+table.draft td, table.draft th { vertical-align: top; } table.draft input.key { width: 6em; }
+
+/* the pre-submission check says what to do next, not only what is wrong */
+.next-steps { background: #f3f0ff; border: 1px solid #d9d0ff; border-radius: 8px; padding: 10px 16px; margin: 10px 0; }
+.next-steps h3 { margin: 0 0 6px; font-size: 15px; }
+.next-steps ol { margin: 0; padding-left: 22px; }
+.next-steps li { margin: 3px 0; }
+.findings li { margin-bottom: 10px; }
+.what-to-do { margin: 4px 0 0 4px; padding: 6px 10px; border-left: 3px solid #5b3fd1; background: #fafaff; color: #2b2b3a; }
+.rule.pulse { outline: 3px solid #ffb300; box-shadow: 0 0 14px 4px rgba(255, 179, 0, 0.6); transition: box-shadow 0.4s; }
+
+/* one-click fixes: what it will do, then the button, then what it did */
+.fix { border-left: 4px solid #5b3fd1; margin: 10px 0; }
+.fix h3 { margin: 0 0 6px; font-size: 15px; }
+.fix ul { margin: 0 0 8px; padding-left: 20px; }
+.fix-input { display: block; margin: 6px 0; font-weight: 600; }
+.fix-input input { margin-left: 8px; min-width: 260px; }
+.fix-result { margin-top: 6px; }
+
+/* the setup guide: a chat beside the step the person is doing */
+.guide { display: flex; flex-direction: column; min-height: 0; height: 100%; background: #fbfaff; border-left: 1px solid #e0dcf5; }
+.guide-head { padding: 10px 12px 8px; border-bottom: 1px solid #e0dcf5; background: linear-gradient(95deg, #eceaff, #f6f3ff); display: flex; flex-direction: column; gap: 2px; }
+.guide-head .muted { font-size: 12px; }
+.guide-need { padding: 8px 12px; border-bottom: 1px solid #e8e5f8; background: #fff; font-size: 13px; }
+.guide-need ul { margin: 4px 0 0; padding-left: 18px; }
+.guide-need li.held { color: #2f7a4b; }
+.guide-need li.missing { color: #8a4b00; font-weight: 600; }
+.guide-log { flex: 1; min-height: 80px; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.guide .msg { max-width: 94%; padding: 8px 11px; border-radius: 10px; font-size: 13px; line-height: 1.4; }
+.guide .msg p { margin: 0 0 6px; }
+.guide .msg p:last-child { margin-bottom: 0; }
+.guide .msg.bot { background: #fff; border: 1px solid #e3e0f6; align-self: flex-start; }
+.guide .msg.user { background: #5b3fd1; color: #fff; align-self: flex-end; }
+.guide-warn { color: #8a4b00; background: #fff4e0; border-left: 3px solid #f0a020; padding: 4px 8px; }
+.guide-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 10px 6px; }
+.guide .chip { border: 1px solid #cfc8f3; background: #f3f0ff; color: #3b2a9a; border-radius: 14px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+.guide .chip:hover { background: #e6e0ff; }
+.guide-input { display: flex; gap: 6px; padding: 8px 10px 10px; border-top: 1px solid #e0dcf5; background: #fff; }
+.guide-input .guide-text { flex: 1; min-width: 0; }
+.guide-attach { width: 30px; border: 1px solid #cfc8f3; background: #f3f0ff; border-radius: 6px; font-size: 18px; line-height: 1; cursor: pointer; color: #3b2a9a; }
+.guide-send { border: 0; background: #5b3fd1; color: #fff; border-radius: 6px; padding: 0 14px; cursor: pointer; }
+.guide.drop { outline: 3px dashed #5b3fd1; outline-offset: -6px; background: #f0ecff; }
+
+/* the start page: your migration step by step, with the guide on the right */
+.start-grid { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 0; height: 100%; min-height: 560px; }
+.start-main { min-width: 0; overflow: auto; padding-right: 8px; }
+.start-guide { min-height: 0; height: calc(100vh - 20px); position: sticky; top: 0; border: 1px solid #e0dcf5; border-radius: 8px; overflow: hidden; }
+.journey-box { background: #fff; border: 1px solid #e0dcf5; border-radius: 8px; padding: 12px 16px; margin: 12px 0; }
+.journey-box h2 { margin: 0 0 8px; font-size: 16px; }
+.journey { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
+.journey li { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: 8px; border: 1px solid #e3e0f6; background: #fbfaff; color: #6b7285; }
+.journey li .n { width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; background: #e6e3f7; color: #5b4bb0; flex: none; }
+.journey li.done { color: #2f7a4b; background: #f0faf3; border-color: #cfe9d8; }
+.journey li.done .n { background: #2f7a4b; color: #fff; }
+.journey li.current { color: #1b2438; background: #fff7e0; border-color: #f0c040; font-weight: 600; box-shadow: 0 0 0 2px rgba(240, 192, 64, .35); }
+.journey li.current .n { background: #f0a020; color: #fff; }
+.journey-now { margin: 10px 0 6px; }
+.journey-actions { margin: 0; }
+
+/* approval cards: the situation, the proposal, then the question */
+.fix.approval { border-left-color: #f0a020; background: #fffdf7; }
+.fix.approval p { margin: 6px 0; }
+.fix.approval details { margin: 6px 0; }
+.fix.approval summary { cursor: pointer; color: #5b3fd1; }
+.fix-label { margin: 8px 0 2px; font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .3px; color: #6b7285; }
+.fix-question { margin-top: 10px !important; }
+
+/* the application disagrees with what it was asked */
+.pushback { margin-top: 8px; padding: 8px 12px; border-radius: 6px; border-left: 4px solid #d64545; background: #fdf0f0; }
+.pushback.warn { border-left-color: #e08a00; background: #fff6e6; }
+.pushback p { margin: 4px 0; }
+.guide-held { margin-top: 6px; padding: 6px 8px; border-left: 3px solid #e08a00; background: #fff6e6; border-radius: 4px; }
+.guide-held p { margin: 3px 0; }

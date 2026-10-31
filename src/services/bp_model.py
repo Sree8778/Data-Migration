@@ -23,13 +23,24 @@ KEY_LENGTH = 10
 VALID_ROLES = ("FLCU00", "FLCU01", "FLVN00", "FLVN01")
 
 TABLE_FIELDS: dict[str, tuple[str, ...]] = {
-    "BUT000": ("TYPE", "BU_GROUP", "NAME_ORG1", "NAME_ORG2", "BU_SORT1"),
+    "BUT000": ("TYPE", "BU_GROUP", "NAME_ORG1", "NAME_ORG2", "BU_SORT1", "NAME_FIRST", "NAME_LAST"),
     "ADRC": ("COUNTRY", "STREET", "HOUSE_NUM1", "CITY1", "POST_CODE1", "REGION", "LANGU"),
+    "ADR6": ("SMTP_ADDR",),
+    "ADR2": ("TEL_NUMBER", "TEL_EXTENS"),
+    "ADR3": ("FAX_NUMBER", "FAX_EXTENS"),
+    "DFKKBPTAXNUM": ("TAXTYPE", "TAXNUM"),
+    "BUT0BK": ("BKVID", "BANKS", "BANKL", "BANKN", "KOINH", "IBAN"),
     "KNB1": ("BUKRS", "AKONT", "ZTERM", "ZWELS"),
     "KNVV": ("VKORG", "VTWEG", "SPART", "WAERS", "INCO1"),
+    "LFB1": ("BUKRS", "AKONT", "ZTERM", "ZWELS"),
+    "LFM1": ("EKORG", "WAERS", "ZTERM", "INCO1"),
 }
 COMPANY_CODE_KEY = ("BUKRS",)
 SALES_AREA_KEY = ("VKORG", "VTWEG", "SPART")
+PURCHASING_KEY = ("EKORG",)
+SUPPLIER_ROLES = ("FLVN00", "FLVN01")
+# Segments a mapping only has to fill when it maps something of them: a customer migration is not asked for bank details or vendor data.
+OPTIONAL_SEGMENTS = frozenset({"ADR6", "ADR2", "ADR3", "DFKKBPTAXNUM", "BUT0BK", "LFB1", "LFM1"})
 # Fields that SAP stores with the ALPHA conversion exit: numeric values are left-padded with zeros.
 ALPHA_FIELDS: dict[str, int] = {"BP_EXT": KEY_LENGTH, "AKONT": KEY_LENGTH}
 
@@ -95,6 +106,35 @@ def assemble_record(row: dict[str, Optional[str]], config: BpConfig, has_role_co
         warnings.append("sales data present without VKORG/VTWEG/SPART: KNVV row dropped")
         sales = {}
 
+    # communication data hangs on the address: SAP needs the address (and its country) to attach an e-mail, a telephone or a fax number to
+    email, phone, fax = fields("ADR6"), fields("ADR2"), fields("ADR3")
+    address = fields("ADRC")
+    if (email or phone or fax) and not address.get("COUNTRY"):
+        warnings.append("e-mail / telephone / fax present without an address country: communication data dropped")
+        email = phone = fax = {}
+    if phone and "TEL_NUMBER" not in phone:
+        warnings.append("telephone extension without a telephone number: dropped")
+        phone = {}
+    if fax and "FAX_NUMBER" not in fax:
+        warnings.append("fax extension without a fax number: dropped")
+        fax = {}
+    tax = fields("DFKKBPTAXNUM")
+    if tax and not all(k in tax for k in ("TAXTYPE", "TAXNUM")):
+        warnings.append("tax number data needs both TAXTYPE and TAXNUM: DFKKBPTAXNUM row dropped")
+        tax = {}
+    bank = fields("BUT0BK")
+    if bank and not all(k in bank for k in ("BANKS", "BANKL")):
+        warnings.append("bank details need BANKS (country) and BANKL (bank key): BUT0BK row dropped")
+        bank = {}
+    vendor_company = fields("LFB1")
+    if vendor_company and not all(k in vendor_company for k in COMPANY_CODE_KEY):
+        warnings.append("vendor company-code data present without BUKRS: LFB1 row dropped")
+        vendor_company = {}
+    vendor_purchasing = fields("LFM1")
+    if vendor_purchasing and not all(k in vendor_purchasing for k in PURCHASING_KEY):
+        warnings.append("vendor purchasing data present without EKORG: LFM1 row dropped")
+        vendor_purchasing = {}
+
     roles = list(config.default_roles)
     if has_role_column:
         listed = re.split(r"[,\s;]+", _clean(row.get("BUT100_RLTYP")) or "")
@@ -105,9 +145,17 @@ def assemble_record(row: dict[str, Optional[str]], config: BpConfig, has_role_co
         if not roles:
             issues.append("no BP role assigned")
 
+    if vendor_company and "AKONT" not in vendor_company:
+        issues.append("vendor company-code data (LFB1) needs the reconciliation account AKONT")
+    if vendor_purchasing and "WAERS" not in vendor_purchasing:
+        issues.append("vendor purchasing data (LFM1) needs the order currency WAERS")
+    if (vendor_company or vendor_purchasing) and not any(r in SUPPLIER_ROLES for r in roles):
+        issues.append("vendor data (LFB1 / LFM1) needs a supplier role (FLVN00 or FLVN01): map BUT100.RLTYP")
+
     return BusinessPartnerRecord(
-        source_pk=pk, bp_ext=bp_ext, general=fields("BUT000"), roles=roles, address=fields("ADRC"),
-        company_code=company, sales_area=sales, blocking_issues=issues, warnings=warnings,
+        source_pk=pk, bp_ext=bp_ext, general=fields("BUT000"), roles=roles, address=address,
+        company_code=company, sales_area=sales, email=email, phone=phone, fax=fax, tax=tax, bank=bank,
+        vendor_company=vendor_company, vendor_purchasing=vendor_purchasing, blocking_issues=issues, warnings=warnings,
     )
 
 

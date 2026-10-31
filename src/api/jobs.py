@@ -58,6 +58,11 @@ class Job:
                 self.current, self.column = total, None
                 self.message = "Validating rules and saving the draft mapping"
 
+    def step(self, current: int, text: str, total: int = 3) -> None:
+        """Progress for a job that has a few stages instead of columns (the pipeline)."""
+        with self._lock:
+            self.current, self.total, self.column, self.message = current - 1, total, None, text
+
     def request_cancel(self) -> None:
         self._cancel.set()
         with self._lock:

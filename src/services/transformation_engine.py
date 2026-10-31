@@ -42,6 +42,7 @@ from src.services._duckdb_util import (
     DEFAULT_MEMORY_LIMIT_MB,
     bounded_connection,
     file_relation,
+    fold,
     lit,
     q,
 )
@@ -53,6 +54,15 @@ PK_COLUMN = "_SRC_PK"
 STATUS_COLUMN = "_TRANSFORM_STATUS"
 ERRORS_COLUMN = "_TRANSFORM_ERRORS"
 _ERR_VALUE_CHARS = 60
+# Characters no SAP text field (or PostgreSQL text column) can hold: C0/C1 control characters, DEL, and the bidirectional override /
+# isolate characters that make a name display as something else. A value containing one is a defect for a person to fix, not data to alter.
+_CONTROL_CHARS = "[\\x00-\\x1f\\x7f-\\x9f\\x{202A}-\\x{202E}\\x{2066}-\\x{2069}]"
+_CONTROL_ERROR = "CONVERSION_FAILED: value contains a control character (NUL, line break, tab, bidi override...) that SAP cannot store"
+
+
+def _shown(expr: str) -> str:
+    """A value for use inside an error message: cut to length and with control characters made visible, so the message itself is storable."""
+    return f"regexp_replace(left({expr}, {_ERR_VALUE_CHARS}), '{_CONTROL_CHARS}', '?', 'g')"
 
 _STRING_TYPES = {"CHAR", "VARCHAR", "VARCHAR2", "NVARCHAR", "STRING", "SSTRING", "LANG", "CUKY", "CLNT",
                  "UNIT", "LCHR", "TEXT", "DATS", "TIMS"}
@@ -90,6 +100,13 @@ def _type_spec(col: CatColumn) -> _TypeSpec:
         return _TypeSpec("timestamp", "TIMESTAMP", None, "TIMESTAMP")
     # CHAR-like and anything unrecognised: text with the catalogued maximum length
     return _TypeSpec("string", "VARCHAR", length, f"{dtype or 'CHAR'}({length})" if length else dtype or "CHAR")
+
+
+# A partner is named by NAME_LAST when it is a person (BP category 1) and by NAME_ORG1 otherwise, so neither is mandatory on its own.
+CATEGORY_KEY = ("BUT000", "TYPE")
+PERSON_CATEGORY = "1"
+REQUIRED_FOR_PERSON = {("BUT000", "NAME_LAST")}
+REQUIRED_UNLESS_PERSON = {("BUT000", "NAME_ORG1")}
 
 
 @dataclass
@@ -339,7 +356,7 @@ class TransformationEngine:
             if r.rule_type == RuleType.DIRECT_COPY:
                 value = f"nullif(trim({col}), '')"
             elif r.rule_type == RuleType.VALUE_MAPPING:
-                joins.append(f'LEFT JOIN "__lk{i}" ON upper(trim({col})) = "__lk{i}"."__k"')
+                joins.append(f'LEFT JOIN "__lk{i}" ON {fold(col)} = "__lk{i}"."__k"')
                 hit = f'"__lk{i}"."__v"'
                 if fallback == LookupFallback.PASS_THROUGH:
                     miss = f"trim({col})"
@@ -348,7 +365,7 @@ class TransformationEngine:
                 else:
                     miss = "CAST(NULL AS VARCHAR)"
                     lerr = (f"CASE WHEN {col} IS NOT NULL AND {hit} IS NULL "
-                            f"THEN 'LOOKUP_FAILED: no mapping for ''' || left(trim({col}), {_ERR_VALUE_CHARS}) || '''' END")
+                            f"THEN 'LOOKUP_FAILED: no mapping for ''' || {_shown(f'trim({col})')} || '''' END")
                 value = f"CASE WHEN {col} IS NULL THEN NULL WHEN {hit} IS NOT NULL THEN {hit} ELSE {miss} END"
             else:  # SQL_EXPRESSION / STATIC_VALUE
                 value = f"CAST(({r.expr_sql}) AS VARCHAR)"
@@ -359,24 +376,35 @@ class TransformationEngine:
 
         carry = [q(PK_COLUMN), '"__rn"'] + [q("SRC_" + c) for c in passthrough]
         stage2 = list(carry)
+        by_target = {(r.target_table, r.target_col): r.idx for r in rules}
         for r in rules:
             i, s = r.idx, r.spec
             v = f"v{i}"
             stage2.append(f"r{i}")
             if s.kind == "string":
-                typed = f"CASE WHEN length({v}) > {s.max_len} THEN NULL ELSE {v} END" if s.max_len else v
-                conv_err = f"'LENGTH_EXCEEDED: value has ' || length({v}) || ' chars, {s.label} allows {s.max_len}'"
+                ctrl = f"regexp_matches({v}, '{_CONTROL_CHARS}')"
+                typed = f"CASE WHEN {ctrl} THEN NULL" + (f" WHEN length({v}) > {s.max_len} THEN NULL" if s.max_len else "") + f" ELSE {v} END"
+                conv_err = (f"CASE WHEN {ctrl} THEN '{_CONTROL_ERROR}' ELSE "
+                            f"'LENGTH_EXCEEDED: value has ' || length({v}) || ' chars, {s.label} allows {s.max_len}' END")
             elif s.kind == "numc":
                 cond = f"NOT regexp_full_match({v}, '[0-9]+')"
                 if s.max_len:
                     cond += f" OR length({v}) > {s.max_len}"
                 typed = f"CASE WHEN {cond} THEN NULL ELSE {v} END"
-                conv_err = f"'CONVERSION_FAILED: ''' || left({v}, {_ERR_VALUE_CHARS}) || ''' is not valid {s.label}'"
+                conv_err = f"'CONVERSION_FAILED: ''' || {_shown(v)} || ''' is not valid {s.label}'"
             else:
                 typed = f"TRY_CAST({v} AS {s.duck})"
-                conv_err = f"'CONVERSION_FAILED: ''' || left({v}, {_ERR_VALUE_CHARS}) || ''' is not valid {s.label}'"
+                conv_err = f"'CONVERSION_FAILED: ''' || {_shown(v)} || ''' is not valid {s.label}'"
             stage2.append(f"{typed} AS t{i}")
-            mandatory = f"WHEN t{i} IS NULL THEN 'MANDATORY_EMPTY: {r.target} is mandatory'" if r.mandatory else ""
+            mandatory = ""
+            category = by_target.get(CATEGORY_KEY)
+            person = f"coalesce(trim(v{category}) = '{PERSON_CATEGORY}', false)" if category is not None else None  # v: the rule's value from the previous stage, whatever the rule order
+            key = (r.target_table, r.target_col)
+            if key in REQUIRED_FOR_PERSON and person:
+                mandatory = f"WHEN t{i} IS NULL AND {person} THEN 'MANDATORY_EMPTY: {r.target} is mandatory for a person'"
+            elif r.mandatory:
+                unless = f" AND NOT {person}" if person and key in REQUIRED_UNLESS_PERSON else ""
+                mandatory = f"WHEN t{i} IS NULL{unless} THEN 'MANDATORY_EMPTY: {r.target} is mandatory'"
             stage2.append(
                 f"COALESCE(l{i}, CASE WHEN {v} IS NOT NULL AND t{i} IS NULL THEN {conv_err} {mandatory} END) AS e{i}"
             )
@@ -417,7 +445,7 @@ class TransformationEngine:
             parts.append(
                 f"SELECT {int(run_id)} AS run_id, {q(PK_COLUMN)} AS source_pk_value, "
                 f"CAST(NULL AS VARCHAR) AS target_pk_value, {lit(r.target)} AS target_column_name, "
-                f"r{i} AS source_raw_value, CAST(t{i} AS VARCHAR) AS transformed_value, "
+                f"regexp_replace(r{i}, '\\x00', '␀', 'g') AS source_raw_value, CAST(t{i} AS VARCHAR) AS transformed_value, "  # PostgreSQL cannot store NUL: show it as the symbol
                 f"{int(r.rule_id)} AS rule_applied_id, false AS loaded_successfully, e{i} AS error_message "
                 f"FROM x2{where}"
             )

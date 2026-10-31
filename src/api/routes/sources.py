@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -28,11 +29,13 @@ from src.db.models import CatColumn, CatDataSource, CatTable, MapFieldRule
 from src.schemas.metadata import BulkColumnRegistration, ColumnCreate, DataSourceCreate, TableCreate
 from src.schemas.source import LandingOptions, SnapshotInfo, SourcePreview
 from src.services.metadata_service import NotFoundError
+from src.services.pii_detector import classify_name
 from src.services.source_landing import PARQUET_FILE, SNAPSHOT_FILE, SourceLandingError, key_problems
 
 router = APIRouter(tags=["sources"])
 _CHUNK = 1 << 20
 _PII = (PiiClassification.CONFIDENTIAL, PiiClassification.RESTRICTED_PII)
+_COMMIT_LOCK = threading.Lock()   # two uploads of the same table name must not move their files into the same folder at once
 
 
 def _parse_options(raw: Optional[str], expected_rows: Optional[int] = None) -> LandingOptions:
@@ -132,7 +135,12 @@ def _retire_stale_columns(ctx: AppContext, table_id: int, current: set[str]) -> 
     return [f"mapping rules still reference column(s) no longer in this file: {', '.join(kept)}; remap them before running the pipeline"] if kept else []
 
 
-def _commit(ctx: AppContext, scratch: Path, system_name: str, system_type: SystemType, config: dict, table_name: Optional[str],
+def _commit(*args, **kwargs) -> SourceRegistration:
+    with _COMMIT_LOCK:
+        return _commit_locked(*args, **kwargs)
+
+
+def _commit_locked(ctx: AppContext, scratch: Path, system_name: str, system_type: SystemType, config: dict, table_name: Optional[str],
             business_name: Optional[str], keys: set[str], snapshot: Optional[SnapshotInfo], stored: int) -> SourceRegistration:
     """Write a landed snapshot into the catalog and move its files into the table's folder. Shared by file uploads and database imports,
     so both leave exactly the same evidence (parquet, snapshot.json, original)."""
@@ -145,7 +153,7 @@ def _commit(ctx: AppContext, scratch: Path, system_name: str, system_type: Syste
         return SourceRegistration(source_id=source.id, system_name=source.system_name, table_id=table.id, table_name=table.table_name)
 
     registered = ctx.metadata.bulk_register_columns(BulkColumnRegistration(table_id=table.id, columns=[
-        ColumnCreate(column_name=c.name, data_type=c.detected_type, is_primary_key=c.name.lower() in keys)
+        ColumnCreate(column_name=c.name, data_type=c.detected_type, is_primary_key=c.name.lower() in keys, pii_classification=classify_name(c.name))
         for c in snapshot.columns]))
     warnings = list(snapshot.warnings)
     warnings += _retire_stale_columns(ctx, table.id, {c.name.lower() for c in snapshot.columns})
@@ -367,15 +375,16 @@ def run_profile(table_id: int, ctx: AppContext = Depends(get_ctx), user: str = D
         if table is None:
             raise NotFoundError(f"table {table_id} does not exist")
         table_name = table.table_name
-        pii = {c.column_name.lower() for c in s.scalars(select(CatColumn).where(
-            CatColumn.table_id == table_id, CatColumn.pii_classification.in_(_PII)))}
     source = ctx.source_file(table_id)
     if source is None:
         raise HTTPException(409, f"no source file uploaded for table {table_id}; register it with a file first")
 
     snapshot = read_snapshot(ctx, table_id)
     result = ctx.profiler.profile_file(source, detected_types=snapshot.detected_types if snapshot else None)
-    ctx.profiler.save_profile_to_catalog(table_id, result)
+    ctx.profiler.save_profile_to_catalog(table_id, result)   # may raise a column's classification when its values look like personal data
+    with ctx.session_factory() as s:                          # so the classification is read AFTER the save: this very response is already masked
+        pii = {c.column_name.lower() for c in s.scalars(select(CatColumn).where(
+            CatColumn.table_id == table_id, CatColumn.pii_classification.in_(_PII)))}
     columns = [column_health(c, c.column_name.lower() in pii) for c in result.columns]
     inferred = [k.columns for k in result.key_duplicates]
     response = ProfileResponse(

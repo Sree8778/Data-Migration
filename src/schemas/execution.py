@@ -81,6 +81,9 @@ class ExactKey(_Model):
     # alnum: tax/VAT ids (strip punctuation, upper) | email: trim+lower | digits: phone numbers
     # text: collapse whitespace + upper
     normalizer: Literal["alnum", "email", "digits", "text"] = "text"
+    # Two records that both carry a valid value of this key and DIFFER are different entities: the fuzzy match may not merge them, however
+    # alike their names are (two companies with different tax numbers). Off by default: e-mail and phone legitimately differ within one entity.
+    vetoes_fuzzy: bool = False
 
 
 class DedupConfig(_Model):
@@ -91,9 +94,26 @@ class DedupConfig(_Model):
     address_columns: list[str] = Field(default_factory=list)
     # A key value shared by more records than this is a placeholder or group mailbox, not one entity: it links nobody.
     max_key_group: int = Field(default=25, ge=2)
-    fuzzy_threshold: float = Field(default=0.88, ge=0.0, le=1.0)
+    fuzzy_threshold: float = Field(default=0.88, ge=0.0, le=1.0)  # at or above: merged automatically
+    # Fellegi-Sunter's third outcome: a pair scoring from here up to fuzzy_threshold is a POSSIBLE duplicate. It is NOT merged (both records load) and it is
+    # listed in possible_duplicates.parquet for a person to decide. Equal to fuzzy_threshold = no review band.
+    review_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
+    # A record that failed transformation can still be recognised as a duplicate of a good one (and then needs no fixing), but never becomes the master
+    # of a group that has a good member.
+    include_failed_rows: bool = True
+    # What people decided about pairs of records (by their primary key value) in the review of possible duplicates: a decided pair is no longer left to the score.
+    # Survivorship: when records are merged, what happens to a field the surviving record lacks. `master_only` (default): nothing, the master is loaded as it is (and what the
+    # duplicates knew is lost). `fill_blanks`: a blank field of the master is filled from the best duplicate that has it (the most complete first); the report counts
+    # the cells filled and every filled row says which columns came from a duplicate (dedup_enriched_columns).
+    survivorship: Literal["master_only", "fill_blanks"] = "master_only"
+    survivorship_columns: Optional[list[str]] = None  # default: every staging value column except the name, the keys and the internal ones
+    must_link: list[tuple[str, str]] = Field(default_factory=list)    # 'these are the same entity': merged whatever the score
+    cannot_link: list[tuple[str, str]] = Field(default_factory=list)  # 'these are different entities': never merged, whatever the score or the key
     name_weight: float = Field(default=0.65, gt=0.0, lt=1.0)
     max_block_size: int = Field(default=2000, ge=2)
+    # A name that this many records (or more) share is a COMMON name ("Maria Garcia"): on its own, or with nothing more than a city, it proves nothing about two records being
+    # one person. Such a pair is not merged: it goes to the review list, where a person decides. A rare name is still strong evidence.
+    common_name_count: int = Field(default=5, ge=2)
     # Columns counted for the completeness score; default: every non-internal staging column.
     completeness_columns: Optional[list[str]] = None
 
@@ -124,8 +144,21 @@ class DedupReport(_Model):
     ignored_shared_keys: dict[str, int] = Field(default_factory=dict)  # key name -> distinct values skipped as placeholders
     fuzzy_pairs_evaluated: int
     fuzzy_pairs_matched: int
+    possible_duplicate_pairs: int = 0  # pairs in the review band: NOT merged, listed for a person (possible_duplicates_path)
+    possible_duplicates_path: Optional[str] = None
+    enriched_cells: int = 0  # fields of a surviving record filled from a duplicate (survivorship = fill_blanks)
+    reviewed_merges: int = 0  # pairs a person decided to merge, found in this data
+    reviewed_separations: int = 0  # pairs a person decided to keep apart, found in this data
+    weak_match_clusters: int = 0  # merged groups held together by the name alone (a record had no address to confirm it)
+    fuzzy_blocks_limited: int = 0  # oversized blocks compared by nearest neighbours only (see max_block_size)
+    street_conflict_pairs_held_back: int = 0  # name + city + postal code + house number matched but the STREET names are plainly different: sent to review instead of merged
+    common_name_pairs_held_back: int = 0  # name matches NOT merged because the name is a common one and nothing but the city backed it: sent to review instead
+    chain_links_refused: int = 0  # links NOT made because they would have put two different tax numbers into one group (reached through a record that has no tax number)
+    exact_links_vetoed: int = 0  # shared e-mail / phone links NOT made because the two records carry different tax numbers (two legal entities)
+    fuzzy_pairs_vetoed: int = 0  # name/address matches NOT merged because a veto key (tax number) differs between the two records
     samples: list[ClusterSample]
     output_path: str
+    warnings: list[str] = Field(default_factory=list)  # things a person should look at before trusting the result (very high merge rate, merged records with different tax numbers)
 
 
 # ------------------------------------------------------------------ run orchestration

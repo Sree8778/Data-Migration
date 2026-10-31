@@ -15,7 +15,8 @@
     <nav aria-label="Primary">
       <a href="/">Workspace</a>
       {% if table_id %}<a href="/ui/profiler/{{ table_id }}">Profiler</a><a href="/ui/studio/{{ table_id }}">Mapping Studio</a>{% endif %}
-      {% if run_id %}<a href="/ui/governance/{{ run_id }}">Governance</a><a href="/ui/certificate/{{ run_id }}">Certificate</a>{% endif %}
+      {% if run_id %}<a href="/ui/governance/{{ run_id }}">Governance</a><a href="/ui/certificate/{{ run_id }}">Certificate</a><a href="/ui/duplicates/{{ run_id }}">Duplicates</a>{% endif %}
+      <a href="/ui/tasks">Tasks</a>
       <a href="/docs" target="_blank" rel="noopener">API</a>
     </nav>
     <button type="button" class="key-indicator gray" id="key-indicator" aria-haspopup="dialog" title="Gemini API key stack">

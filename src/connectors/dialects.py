@@ -336,10 +336,14 @@ class MysqlConnector(Connector):
         return names, rows()
 
 
-CONNECTORS: dict[str, type[Connector]] = {c.dialect: c for c in (PostgresConnector, OracleConnector, MssqlConnector, MysqlConnector)}
+from src.connectors.documents import MongoConnector  # noqa: E402  (a document database: read-only, same browsing and extraction interface)
+
+from src.connectors.firestore import FirestoreConnector  # noqa: E402  (Google Firebase's document database: read-only, the same interface)
+
+CONNECTORS: dict[str, type] = {c.dialect: c for c in (PostgresConnector, OracleConnector, MssqlConnector, MysqlConnector, MongoConnector, FirestoreConnector)}
 
 
-def connector_for(spec: ConnectionSpec, connect=None) -> Connector:
+def connector_for(spec: ConnectionSpec, connect=None):
     cls = CONNECTORS.get(spec.dialect)
     if cls is None:
         raise ConnectorError(f"unsupported database type '{spec.dialect}' (supported: {', '.join(sorted(CONNECTORS))})")

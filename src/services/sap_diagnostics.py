@@ -29,7 +29,9 @@ from src.services.sap_client import (
     BP_ENTITY, BP_SERVICE_ROOT, ENTITY_PROPERTIES, HttpSapClient, SapAuthError, SapConfig, SapUnavailableError, build_odata_payload)
 
 METADATA_URL = BP_SERVICE_ROOT + "$metadata"
-NAVIGATIONS = ("to_BusinessPartnerRole", "to_BusinessPartnerAddress", "to_Customer")
+NAVIGATIONS = ("to_BusinessPartnerRole", "to_BusinessPartnerAddress", "to_Customer", "to_Supplier", "to_BusinessPartnerTaxNumber", "to_BusinessPartnerBank")
+# navigations of the other entities we deep-insert through
+ENTITY_NAVIGATIONS = {"A_BusinessPartnerAddress": ("to_EmailAddress", "to_PhoneNumber", "to_FaxNumber")}
 TEST_MARK = "MIGRATION TEST - SAFE TO ARCHIVE"
 
 
@@ -131,6 +133,11 @@ class SapDiagnostics:
             missing_nav = [n for n in NAVIGATIONS if n not in navs]
             if missing_nav:
                 problems.append("A_BusinessPartner has no navigation " + ", ".join(missing_nav))
+            for entity_set, wanted_navs in ENTITY_NAVIGATIONS.items():
+                have = types.get(sets.get(entity_set, ""), {}).get("__navigations__", [])
+                absent = [n for n in wanted_navs if n not in have]
+                if absent and sets.get(entity_set):
+                    problems.append(f"{entity_set} has no navigation " + ", ".join(absent))
             ext = self._config.external_id_field
             if ext and ext not in types.get(bp_type, {}):
                 problems.append(f"the configured external id field {ext} is not a property of A_BusinessPartner")
@@ -231,8 +238,10 @@ def parse_metadata(xml_text: str) -> tuple[dict[str, str], dict[str, dict]]:
 
 def expected_odata_lengths(catalog_lengths: Mapping[str, Optional[int]]) -> dict[str, int]:
     """{'BUT000.NAME_ORG1': 40, ...} (our SAP catalog) -> {'OrganizationBPName1': 40, ...}: what our validation allows, by OData property."""
-    from src.services.sap_client import ADDRESS_FIELDS, COMPANY_FIELDS, GENERAL_FIELDS, SALES_FIELDS
-    table_maps = {"BUT000": GENERAL_FIELDS, "ADRC": ADDRESS_FIELDS, "KNB1": COMPANY_FIELDS, "KNVV": SALES_FIELDS}
+    from src.services import sap_client as sc
+    table_maps = {"BUT000": sc.GENERAL_FIELDS, "ADRC": sc.ADDRESS_FIELDS, "KNB1": sc.COMPANY_FIELDS, "KNVV": sc.SALES_FIELDS, "ADR6": sc.EMAIL_FIELDS,
+                  "ADR2": sc.PHONE_FIELDS, "ADR3": sc.FAX_FIELDS, "DFKKBPTAXNUM": sc.TAX_FIELDS, "BUT0BK": sc.BANK_FIELDS,
+                  "LFB1": sc.VENDOR_COMPANY_FIELDS, "LFM1": sc.VENDOR_PURCHASING_FIELDS}
     out: dict[str, int] = {}
     for qualified, length in catalog_lengths.items():
         table, _, column = qualified.partition(".")

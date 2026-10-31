@@ -4,7 +4,7 @@ module schemas where they already fit."""
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -50,7 +50,7 @@ class SourceRegistration(BaseModel):
     extract_seconds: Optional[float] = None
 
 
-Kind = Literal["postgresql", "oracle", "mssql", "mysql", "azure_blob", "s3", "sftp"]
+Kind = Literal["postgresql", "oracle", "mssql", "mysql", "mongodb", "firestore", "azure_blob", "s3", "sftp"]
 
 
 class ConnectionIn(_In):
@@ -60,7 +60,7 @@ class ConnectionIn(_In):
     port: Optional[int] = Field(default=None, ge=1, le=65535)
     database: str = Field(default="", max_length=128, description="database name; for Oracle the service name")
     user: str = Field(min_length=1, max_length=128)
-    password: Optional[str] = Field(default=None, max_length=512, repr=False, description="kept in server memory only, never stored")
+    password: Optional[str] = Field(default=None, max_length=8192, repr=False, description="kept in server memory only, never stored (Firestore: the whole service-account key file)")
     password_env: Optional[str] = Field(default=None, max_length=64, description="name of a server environment variable that holds the password")
     options: dict[str, Any] = Field(default_factory=dict)
     role: Literal["source", "target"] = Field(default="source", description="target = the application may create tables and load into this database")
@@ -74,7 +74,7 @@ class ConnectionTestIn(_In):
     port: Optional[int] = Field(default=None, ge=1, le=65535)
     database: str = ""
     user: Optional[str] = None
-    password: Optional[str] = Field(default=None, max_length=512, repr=False)
+    password: Optional[str] = Field(default=None, max_length=8192, repr=False)
     password_env: Optional[str] = Field(default=None, max_length=64, description="name of a server environment variable that holds the password")
     options: dict[str, Any] = Field(default_factory=dict)
 
@@ -149,6 +149,11 @@ class DeltaRequest(_In):
     baseline_run: Optional[int] = Field(default=None, ge=1, description="the earlier run to compare with (default: the latest earlier run of the same mapping set that has a validated payload)")
 
 
+class DbRecoverResult(BaseModel):
+    action: str
+    delivery: Optional[DbLoadResult] = None
+
+
 class DbRollbackRequest(_In):
     connection: str
     schema_name: Optional[str] = Field(default=None, max_length=128)
@@ -192,6 +197,13 @@ class DbLoadPreviewColumn(BaseModel):
     nullable: bool
 
 
+class DestinationCheckOut(BaseModel):
+    level: Literal["block", "warn", "info"]
+    code: str
+    message: str
+    next_step: str = ""
+
+
 class DbLoadPreview(BaseModel):
     run_id: int
     connection: str
@@ -200,6 +212,40 @@ class DbLoadPreview(BaseModel):
     rows: int
     columns: list[DbLoadPreviewColumn]
     ddl: str
+    checks: list[DestinationCheckOut] = Field(default_factory=list)   # what the destination says about this delivery (a quota, a key it cannot use, a collection that already exists)
+
+
+class MappingTargetIn(_In):
+    connection: Optional[str] = Field(default=None, max_length=64, description="a saved TARGET connection; null = the default (SAP)")
+
+
+class MappingTargetOut(BaseModel):
+    mapping_set_id: int
+    connection: Optional[str]
+    label: str
+    dialect: Optional[str] = None
+    default_schema: Optional[str] = None
+    set_by: Optional[str] = None
+    set_at: Optional[str] = None
+    problem: Optional[str] = None
+
+
+class DbRecoverRequest(_In):
+    connection: str
+    schema_name: Optional[str] = Field(default=None, max_length=128)
+    table_name: str = Field(min_length=1, max_length=30)
+    action: Literal["adopt", "discard"]
+
+
+class DbPendingDelivery(BaseModel):
+    run_id: int
+    connection: str
+    schema_name: str
+    table: str
+    mode: str
+    valid_records: int
+    started_by: str
+    started_at: str
 
 
 class DbLoadResult(BaseModel):
@@ -233,6 +279,7 @@ class DbLoadResult(BaseModel):
     deleted: int = 0
     rows_before: Optional[int] = None
     before_rows: int = 0  # rows copied to the before-image (replaced and deleted ones), which a rollback puts back
+    recovered_after_interruption: bool = False  # the server stopped during this delivery; it was adopted after the table was compared with the payload
 
 
 class TargetKind(BaseModel):
@@ -465,7 +512,7 @@ class JobStatus(BaseModel):
     created_at: datetime
     finished_at: Optional[datetime] = None
     progress: JobProgress
-    result: Optional[GenerateResponse] = None  # set when status == succeeded
+    result: Optional[Union[GenerateResponse, "PipelineRunResponse"]] = None  # set when status == succeeded: the mapping (kind ai-mapping) or the run (kind pipeline)
     error: Optional[JobError] = None
     already_running: bool = False
 
@@ -505,6 +552,7 @@ class PipelineRunRequest(_In):
     lookup_fallback: Literal["FLAG_FAILED", "PASS_THROUGH", "USE_DEFAULT"] = "FLAG_FAILED"
     lookup_default: Optional[str] = None
     lineage: Literal["ALL", "EXCEPTIONS", "NONE"] = "ALL"
+    survivorship: Literal["master_only", "fill_blanks"] = "master_only"  # fill_blanks: a merged record inherits the fields it lacks from its best duplicate
 
 
 class PipelineRunResponse(BaseModel):
@@ -515,6 +563,10 @@ class PipelineRunResponse(BaseModel):
     readiness: ReadinessResult
     dedup_applied: bool
     dedup: Optional[DedupReport] = None
+
+
+DbRecoverResult.model_rebuild()  # refers to DbLoadResult, which is defined after it
+JobStatus.model_rebuild()  # JobStatus.result may hold a PipelineRunResponse, which is defined after it
 
 
 class RunSummary(BaseModel):

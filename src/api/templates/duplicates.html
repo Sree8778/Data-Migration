@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="muted">The engine merges only what it is sure of. Pairs that look alike but not enough were <strong>not merged</strong>: both records load unless you say they are the same entity. Records merged on the name alone (no address to confirm it) are listed too, so a wrong merge can be undone. Your decisions are kept for this table and applied by every later run: <strong>run the pipeline again</strong> to see their effect.</p>
+<div id="summary" class="cards"></div>
+<section class="card">
+  <h2>Possible duplicates <span class="muted" id="possible-count"></span></h2>
+  <div class="toolbar"><label class="check"><input type="checkbox" id="undecided-only" checked> only those nobody has decided yet</label></div>
+  <div id="possible"><p class="muted">Loading...</p></div>
+</section>
+<section class="card">
+  <h2>Merged on the name alone <span class="muted" id="merges-count"></span></h2>
+  <div id="merges"><p class="muted">Loading...</p></div>
+</section>
+<section class="card">
+  <h2>Decisions taken</h2>
+  <div id="decisions"></div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/js/duplicates.js"></script>{% endblock %}

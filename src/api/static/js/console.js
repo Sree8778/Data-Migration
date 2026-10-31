@@ -22,6 +22,13 @@
     let m;
     if (path === "/ui/start") return { title: "Start Page", icon: "i-home" };
     if (path === "/ui/sources") return { title: "Sources & Runs", icon: "i-upload" };
+    if (path === "/ui/combine") return { title: "Combine Tables", icon: "i-table" };
+    if (path === "/ui/dashboard") return { title: "Dashboard", icon: "i-chart" };
+    if (path === "/ui/tasks") return { title: "Tasks", icon: "i-shield" };
+    if (path === "/ui/packs") return { title: "Content Packs", icon: "i-map" };
+    if ((m = path.match(/^\/ui\/duplicates\/(\d+)$/))) return { title: "Duplicates - run " + m[1], icon: "i-table" };
+    if (path === "/ui/compliance") return { title: "Compliance", icon: "i-cert" };
+    if ((m = path.match(/^\/ui\/quality\/(\d+)$/))) return { title: "Quality - " + (tableName(m[1]) || "table " + m[1]), icon: "i-table" };
     if ((m = path.match(/^\/ui\/profiler\/(\d+)$/))) return { title: "Profiler - " + (tableName(m[1]) || "table " + m[1]), icon: "i-chart" };
     if ((m = path.match(/^\/ui\/studio\/(\d+)$/))) return { title: "Mapping - " + (tableName(m[1]) || "table " + m[1]), icon: "i-map" };
     if ((m = path.match(/^\/ui\/governance\/(\d+)$/))) return { title: "Governance - run " + m[1], icon: "i-shield" };
@@ -246,9 +253,9 @@
   function updateToolbar() {
     const c = selCtx();
     // the open tab also counts as context, so Profiler/Governance work for whatever you are looking at
-    const m = active && active.url.match(/^\/ui\/(profiler|studio|governance|certificate)\/(\d+)$/);
-    const table = c.table || (m && /profiler|studio/.test(m[1]) ? Number(m[2]) : null);
-    const runId = c.run || (m && /governance|certificate/.test(m[1]) ? Number(m[2]) : null);
+    const m = active && active.url.match(/^\/ui\/(profiler|studio|quality|governance|certificate|duplicates)\/(\d+)$/);
+    const table = c.table || (m && /profiler|studio|quality/.test(m[1]) ? Number(m[2]) : null);
+    const runId = c.run || (m && /governance|certificate|duplicates/.test(m[1]) ? Number(m[2]) : null);
     document.querySelectorAll("[data-needs]").forEach((b) => { b.disabled = !(b.dataset.needs === "table" ? table : runId); });
     updateToolbar.table = table; updateToolbar.run = runId;
   }
@@ -256,6 +263,13 @@
   const ACTIONS = {
     "open-start": () => openTab("/ui/start"),
     "open-sources": () => openTab("/ui/sources"),
+    "open-combine": () => openTab("/ui/combine", "Combine Tables"),
+    "open-dashboard": () => openTab("/ui/dashboard", "Dashboard"),
+    "open-tasks": () => openTab("/ui/tasks", "Tasks"),
+    "open-packs": () => openTab("/ui/packs", "Content Packs"),
+    "open-duplicates": () => updateToolbar.run && openTab("/ui/duplicates/" + updateToolbar.run),
+    "open-compliance": () => openTab("/ui/compliance", "Compliance"),
+    "open-quality": () => updateToolbar.table && openTab("/ui/quality/" + updateToolbar.table),
     "new-source": () => window.Wizards && window.Wizards.source(),
     "new-target": () => window.Wizards && window.Wizards.target(),
     "open-profiler": () => updateToolbar.table && openTab("/ui/profiler/" + updateToolbar.table),

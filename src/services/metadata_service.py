@@ -123,6 +123,8 @@ class MetadataService:
                 if name not in ("table_id", "column_name") and name not in stats
             }
             update_cols.update({name: func.coalesce(excluded[name], CatColumn.__table__.c[name]) for name in stats})
+            if "pii_classification" in update_cols:   # a classification is only ever raised: re-registering a table must not unmask what a person or the detector marked
+                update_cols["pii_classification"] = func.greatest(excluded["pii_classification"], CatColumn.__table__.c["pii_classification"])
             update_cols["updated_at"] = func.now()
             stmt = stmt.on_conflict_do_update(
                 constraint="uq_cat_columns_table_id_column_name", set_=update_cols

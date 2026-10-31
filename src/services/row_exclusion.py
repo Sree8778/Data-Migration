@@ -167,16 +167,17 @@ class ExclusionStore:
 
     def __init__(self, workspace: Path) -> None:
         self._dir = Path(workspace) / "exclusions"
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # readers take it too: on Windows a file that is being read cannot be replaced, and a failed read must not look like 'no rules'
 
     def _path(self, mapping_set_id: int) -> Path:
         return self._dir / f"mapping_{int(mapping_set_id)}.json"
 
     def rules(self, mapping_set_id: int) -> list[ExclusionRule]:
-        try:
-            return [ExclusionRule.model_validate(r) for r in json.loads(self._path(mapping_set_id).read_text(encoding="utf-8"))]
-        except (OSError, ValueError):
-            return []
+        with self._lock:
+            try:
+                return [ExclusionRule.model_validate(r) for r in json.loads(self._path(mapping_set_id).read_text(encoding="utf-8"))]
+            except (OSError, ValueError):
+                return []
 
     def _save(self, mapping_set_id: int, rules: list[ExclusionRule]) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)

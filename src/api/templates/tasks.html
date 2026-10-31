@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="muted">Who fixes what, by when. A task can be about a defect group of a run, a data quality finding, a pair of possible duplicates, or anything else. Each person sees their own work; overdue tasks come to the dashboard; a defect task closes itself when a later run no longer has the defect.</p>
+<div id="summary" class="cards"></div>
+<section class="card">
+  <h2>New task</h2>
+  <div class="grid form">
+    <label>Title<input id="t-title" maxlength="200" placeholder="e.g. Correct the payment terms of the French customers"></label>
+    <label>Owner<input id="t-owner" maxlength="128" placeholder="user id"></label>
+    <label>Due<input id="t-due" type="date"></label>
+    <label>Priority<select id="t-priority"><option>MEDIUM</option><option>HIGH</option><option>LOW</option></select></label>
+    <div class="wide"><button type="button" class="btn primary" id="t-create">Create task</button></div>
+  </div>
+</section>
+<section class="card">
+  <h2>From the defects of a run</h2>
+  <div class="grid form">
+    <label>Run<input id="d-run" type="number" min="1" placeholder="e.g. 5"></label>
+    <label>Owner for all<input id="d-owner" maxlength="128" placeholder="user id (optional)"></label>
+    <label>Route by SAP table <span class="muted">(TABLE=owner, comma separated)</span><input id="d-routes" placeholder="ADRC=address.owner,KNB1=finance.owner"></label>
+    <label>Due<input id="d-due" type="date"></label>
+    <div class="wide"><button type="button" class="btn" id="d-create">Create one task per open defect group</button> <button type="button" class="btn" id="d-sync">Close tasks whose defect is gone</button></div>
+  </div>
+</section>
+<section class="card">
+  <h2>Tasks</h2>
+  <div class="toolbar">
+    <button type="button" class="btn small" id="f-mine">Mine</button><button type="button" class="btn small" id="f-all">All</button>
+    <label class="check"><input type="checkbox" id="f-open" checked> open only</label><span class="muted" id="f-info"></span>
+  </div>
+  <div id="list"><p class="muted">Loading...</p></div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/js/tasks.js"></script>{% endblock %}

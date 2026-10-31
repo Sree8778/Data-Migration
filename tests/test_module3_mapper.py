@@ -28,7 +28,7 @@ from src.schemas.metadata import (
     DataSourceCreate,
     TableCreate,
 )
-from src.seeds.seed_sap_catalog import seed_sap_catalog
+from src.seeds.seed_sap_catalog import SAP_BP_TABLES, seed_sap_catalog
 from src.services.embedding_service import EmbeddingService, SentenceTransformerEncoder
 from src.services.llm_mapper_service import (
     DEFAULT_MODEL,
@@ -54,6 +54,9 @@ def encoder():
         pytest.skip(f"embedding model unavailable: {exc!r}")
     return enc
 
+
+# every target column except the numbers SAP assigns (PARTNER, KUNNR, LIFNR, ADDRNUMBER), which are never mapped and so not indexed
+INDEXED = sum(1 for t in SAP_BP_TABLES for c in t.columns if c.column_name not in ("PARTNER", "KUNNR", "LIFNR", "ADDRNUMBER"))
 
 @pytest.fixture()
 def embeddings(encoder, session_factory, service, tmp_path):
@@ -154,7 +157,9 @@ def test_top_k_candidates_against_sap_dictionary(embeddings):
     assert first.data_type == "CHAR" and first.business_name and first.description and first.check_table == "T005"
 
     assert "POST_CODE1" in [c.column_name for c in embeddings.get_top_k_candidates("POSTAL_CODE", "VARCHAR2", 2)]
-    assert "NAME_ORG1" in [c.column_name for c in embeddings.get_top_k_candidates("CUST_NAME", "VARCHAR2", 3)]
+    assert "NAME_ORG1" in [c.column_name for c in embeddings.get_top_k_candidates("CUST_NAME", "VARCHAR2", 8)]   # five name fields exist now (organisation, person, account holder): the model chooses among them
+    for legacy, expected in (("EMAIL", "SMTP_ADDR"), ("TELEPHONE", "TEL_NUMBER"), ("IBAN", "IBAN"), ("BANK_KEY", "BANKL"), ("LAST_NAME", "NAME_LAST")):
+        assert expected == embeddings.get_top_k_candidates(legacy, "VARCHAR2", 1)[0].column_name, legacy
     assert "ZTERM" in [c.column_name for c in embeddings.get_top_k_candidates("PAYMENT_TERMS", "VARCHAR2", 2)]
 
 
@@ -181,9 +186,9 @@ def test_embeddings_are_cached_on_disk(encoder, session_factory, service, tmp_pa
             return encoder.encode(texts, is_query=is_query)
 
     first, second = Counting(), Counting()
-    assert EmbeddingService(session_factory, first, tmp_path).build_index() == 30
-    assert EmbeddingService(session_factory, second, tmp_path).build_index() == 30
-    assert first.docs == 30 and second.docs == 0  # second build served from cache
+    assert EmbeddingService(session_factory, first, tmp_path).build_index() == INDEXED
+    assert EmbeddingService(session_factory, second, tmp_path).build_index() == INDEXED
+    assert first.docs == INDEXED and second.docs == 0  # second build served from cache
 
 
 # ------------------------------------------------------------------ 2. AST guardrails
@@ -472,9 +477,9 @@ def test_live_ollama_returns_contract_valid_recommendation(embeddings):
 
 
 def test_sample_values_rescue_cryptic_names_without_losing_the_name_ranking(embeddings):
-    plain = [c.column_name for c in embeddings.get_top_k_candidates("ORT01", "VARCHAR2", 8)]
-    with_samples = [c.column_name for c in embeddings.get_top_k_candidates("ORT01", "VARCHAR2", 8, ["Berlin", "München", "Dresden", "Hamburg"])]
-    assert "CITY1" in with_samples  # a legacy name that means nothing to the model is placed by what it contains
+    plain = [f"{c.table_name}.{c.column_name}" for c in embeddings.get_top_k_candidates("ORT01", "VARCHAR2", 8)]    # the same column name exists in several tables
+    with_samples = [f"{c.table_name}.{c.column_name}" for c in embeddings.get_top_k_candidates("ORT01", "VARCHAR2", 8, ["Berlin", "München", "Dresden", "Hamburg"])]
+    assert "ADRC.CITY1" in with_samples  # a legacy name that means nothing to the model is placed by what it contains
     assert set(plain[:4]) <= set(with_samples)  # ...while the name-only ranking keeps its best hits
     assert len(with_samples) == len(set(with_samples)) == 8
     assert embeddings.get_top_k_candidates("ORT01", "VARCHAR2", 8, ["Berlin"]) == embeddings.get_top_k_candidates("ORT01", "VARCHAR2", 8, ["Berlin"])  # reproducible

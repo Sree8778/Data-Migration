@@ -18,7 +18,7 @@ def test_alembic_head_matches_models(engine):
 
 def test_alembic_version_is_stamped(engine):
     with engine.connect() as conn:
-        assert conn.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0002"
+        assert conn.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0004"
 
 
 def test_alembic_downgrade_and_upgrade_cycle(engine):
@@ -39,11 +39,11 @@ def test_alembic_downgrade_and_upgrade_cycle(engine):
     # Upgrade back to head
     command.upgrade(cfg, "head")
     with engine.connect() as conn:
-        assert conn.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0002"
+        assert conn.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0004"
 
 
 
-def test_downgrade_with_postgresql_and_mysql_sources_present_relabels_them_instead_of_failing(engine):
+def test_downgrade_with_postgresql_mysql_mongodb_and_firestore_sources_present_relabels_them_instead_of_failing(engine):
     from alembic import command
     from alembic.config import Config
     from src.db.session import get_test_database_url
@@ -53,15 +53,15 @@ def test_downgrade_with_postgresql_and_mysql_sources_present_relabels_them_inste
     with engine.begin() as conn:
         conn.execute(sa.text("DELETE FROM cat_tables; DELETE FROM cat_data_sources"))
         conn.execute(sa.text("INSERT INTO cat_data_sources (system_name, system_type, target_type, connection_config) VALUES "
-                             "('PG_SRC', 'POSTGRESQL', 'SOURCE', '{\"dialect\": \"postgresql\"}'), ('MY_SRC', 'MYSQL', 'SOURCE', '{}')"))
+                             "('PG_SRC', 'POSTGRESQL', 'SOURCE', '{\"dialect\": \"postgresql\"}'), ('MY_SRC', 'MYSQL', 'SOURCE', '{}'), ('MG_SRC', 'MONGODB', 'SOURCE', '{}'), ('FS_SRC', 'FIRESTORE', 'SOURCE', '{}')"))
     command.downgrade(cfg, "0001")
     with engine.connect() as conn:
         assert conn.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0001"
         rows = dict(conn.execute(sa.text("SELECT system_name, system_type FROM cat_data_sources")).all())
-        assert rows == {"PG_SRC": "FLAT_FILE", "MY_SRC": "FLAT_FILE"}
+        assert rows == {"PG_SRC": "FLAT_FILE", "MY_SRC": "FLAT_FILE", "MG_SRC": "FLAT_FILE", "FS_SRC": "FLAT_FILE"}
         with pytest.raises(sa.exc.DBAPIError):
             conn.execute(sa.text("INSERT INTO cat_data_sources (system_name, system_type, target_type, connection_config) VALUES ('X', 'POSTGRESQL', 'SOURCE', '{}')"))
     command.upgrade(cfg, "head")
     with engine.begin() as conn:
         conn.execute(sa.text("DELETE FROM cat_data_sources"))
-        assert conn.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0002"
+        assert conn.scalar(sa.text("SELECT version_num FROM alembic_version")) == "0004"

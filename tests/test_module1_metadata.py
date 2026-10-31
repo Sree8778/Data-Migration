@@ -102,16 +102,24 @@ def test_lineage_pk_is_bigint_and_jsonb_columns(engine):
 # ------------------------------------------------------------------ SAP seed
 def test_seed_registers_sap_bp_dictionary(service):
     result = seed_sap_catalog(service)
-    assert result.tables == 6
+    assert result.tables == len(SAP_BP_TABLES) == 13
     assert result.columns == sum(len(t.columns) for t in SAP_BP_TABLES)
 
     dictionary = service.get_target_dictionary("BUSINESS_PARTNER")
-    assert [t.table.table_name for t in dictionary.tables] == ["BUT000", "BUT100", "BUT020", "ADRC", "KNB1", "KNVV"]
+    assert [t.table.table_name for t in dictionary.tables] == ["BUT000", "BUT100", "BUT020", "ADRC", "ADR6", "ADR2", "ADR3", "DFKKBPTAXNUM", "BUT0BK", "KNB1", "KNVV", "LFB1", "LFM1"]
 
     but000 = _bt(service, "BUT000")
     assert {c.column_name for c in but000.columns} >= {"TYPE", "BU_GROUP", "BP_EXT", "NAME_ORG1", "NAME_ORG2", "BU_SORT1"}
     mandatory = {c.column_name for c in but000.columns if c.is_mandatory}
     assert {"TYPE", "BU_GROUP", "NAME_ORG1"} <= mandatory
+    assert {"NAME_FIRST", "NAME_LAST"} <= {c.column_name for c in but000.columns} and not {"NAME_FIRST", "NAME_LAST"} & mandatory   # a person has them, an organisation does not
+
+    # the optional segments (communication, tax, bank, vendor) never make a customer migration incomplete: none of their fields is mandatory on its own
+    for table in ("ADR6", "ADR2", "ADR3", "DFKKBPTAXNUM", "BUT0BK", "LFB1", "LFM1"):
+        assert not any(c.is_mandatory and not c.is_primary_key for c in _bt(service, table).columns), table   # only the generated parent key (PARTNER / ADDRNUMBER / LIFNR)
+    assert {c.column_name for c in _bt(service, "DFKKBPTAXNUM").columns} == {"PARTNER", "TAXTYPE", "TAXNUM"}
+    assert _bt(service, "BUT0BK").columns and {"IBAN", "BANKN"} <= {c.column_name for c in _bt(service, "BUT0BK").columns}
+    assert next(c for c in _bt(service, "ADR6").columns if c.column_name == "SMTP_ADDR").pii_classification == PiiClassification.RESTRICTED_PII
 
     rltyp = next(c for c in _bt(service, "BUT100").columns if c.column_name == "RLTYP")
     assert rltyp.sample_values == ["FLCU00", "FLCU01", "FLVN00", "FLVN01"]
@@ -145,7 +153,7 @@ def test_seed_is_idempotent_and_preserves_profiling_stats(service, session_facto
     assert first == second
 
     with session_factory() as s:
-        assert s.scalar(sa.select(sa.func.count()).select_from(CatTable)) == 6
+        assert s.scalar(sa.select(sa.func.count()).select_from(CatTable)) == len(SAP_BP_TABLES)
         assert s.scalar(sa.select(sa.func.count()).select_from(CatColumn)) == first.columns
         stat = s.scalar(sa.select(CatColumn.null_ratio).where(CatColumn.column_name == "NAME_ORG1"))
         assert float(stat) == 0.25

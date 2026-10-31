@@ -184,7 +184,7 @@ def _save(client, pg, name="legacy_pg", **extra):
 
 def test_connections_api_saves_tests_and_browses_without_ever_returning_the_password(client, pg, ctx):
     kinds = client.get("/api/connections/dialects").json()
-    assert {d["dialect"] for d in kinds if d["family"] == "database"} == {"postgresql", "oracle", "mssql", "mysql"}
+    assert {d["dialect"] for d in kinds if d["family"] == "database"} == {"postgresql", "oracle", "mssql", "mysql", "mongodb", "firestore"}
     assert {d["dialect"] for d in kinds if d["family"] == "storage"} == {"azure_blob", "s3", "sftp"}
     r = _save(client, pg)
     assert r.status_code == 201, r.text
@@ -254,7 +254,10 @@ def test_import_a_database_table_end_to_end(client, pg, ctx, session_factory):
     types = {c["column_name"]: c["detected_type"] for c in profile["columns"]}
     assert types["cust_id"] == "BIGINT" and types["zip"] == "VARCHAR" and types["amount"] == "DOUBLE" and types["created"] == "TIMESTAMP"
     zips = {v["value"] for c in profile["columns"] if c["column_name"] == "zip" for v in c["top_values"]}
-    assert "02134" in zips                                                                 # the leading zero survived the round trip
+    assert zips == {"99999"}                                                               # a postal code is personal data: the profile shows its shape only...
+    import duckdb
+    landed = {r[0] for r in duckdb.sql(f"SELECT zip FROM read_parquet('{ctx.source_file(body['table_id']).as_posix()}')").fetchall()}
+    assert "02134" in landed                                                               # ...while the landed data kept the leading zero through the round trip
 
     again = client.post("/api/sources/import-db", json={"connection": "legacy_pg", "schema_name": "legacy_ar", "table": "customers"})
     assert again.status_code == 201 and again.json()["table_id"] == body["table_id"]       # same table name = replaced snapshot, not a duplicate
@@ -386,6 +389,6 @@ def test_dialect_specific_quoting_limits_and_read_only_statements():
     o._begin_read_only(conn)
     q._begin_read_only(conn)
     assert [s for s, _ in conn.executed] == ["SET TRANSACTION READ ONLY", "SET SESSION TRANSACTION READ ONLY", "START TRANSACTION WITH CONSISTENT SNAPSHOT"]
-    assert set(CONNECTORS) == {"postgresql", "oracle", "mssql", "mysql"} and {c.system_type for c in CONNECTORS.values()} == {"POSTGRESQL", "ORACLE", "MSSQL", "MYSQL"}
+    assert set(CONNECTORS) == {"postgresql", "oracle", "mssql", "mysql", "mongodb", "firestore"} and {c.system_type for c in CONNECTORS.values()} == {"POSTGRESQL", "ORACLE", "MSSQL", "MYSQL", "MONGODB", "FIRESTORE"}
     with pytest.raises(ConnectorError, match="unsupported"):
         connector_for(ConnectionSpec("db2", "h", 1, "d", "u", "p"))

@@ -79,11 +79,18 @@
       <span class="sep"></span>
       <button type="button" class="ib" data-act="open-start" title="Start Page"><svg class="ic"><use href="#i-home"/></svg><span>Start</span></button>
       <button type="button" class="ib" data-act="open-sources" title="Register a source / list sources and runs"><svg class="ic"><use href="#i-upload"/></svg><span>Sources</span></button>
+      <button type="button" class="ib" data-act="open-combine" title="Join and filter landed tables into one new source table"><svg class="ic"><use href="#i-table"/></svg><span>Combine</span></button>
+      <button type="button" class="ib" data-act="open-dashboard" title="Where the programme stands: waves, trends, data quality, what needs attention"><svg class="ic"><use href="#i-chart"/></svg><span>Dashboard</span></button>
+      <button type="button" class="ib" data-act="open-tasks" title="Who fixes what, by when"><svg class="ic"><use href="#i-shield"/></svg><span>Tasks</span></button>
+      <button type="button" class="ib" data-act="open-packs" title="Export an approved mapping as a content pack / import one"><svg class="ic"><use href="#i-map"/></svg><span>Packs</span></button>
+      <button type="button" class="ib" data-act="open-compliance" title="Compliance controls checked against this installation, and the audit trail"><svg class="ic"><use href="#i-cert"/></svg><span>Compliance</span></button>
       <button type="button" class="ib" data-act="refresh" title="Refresh explorer"><svg class="ic"><use href="#i-refresh"/></svg><span>Refresh</span></button>
       <span class="sep"></span>
       <button type="button" class="ib" data-act="open-profiler" data-needs="table" title="Profiler for the selected table"><svg class="ic"><use href="#i-chart"/></svg><span>Profiler</span></button>
+      <button type="button" class="ib" data-act="open-quality" data-needs="table" title="Data quality rules and assessment for the selected table"><svg class="ic"><use href="#i-table"/></svg><span>Quality</span></button>
       <button type="button" class="ib" data-act="open-studio" data-needs="table" title="Mapping Studio for the selected table"><svg class="ic"><use href="#i-map"/></svg><span>Mapping</span></button>
       <button type="button" class="ib" data-act="open-governance" data-needs="run" title="Governance hub for the selected run"><svg class="ic"><use href="#i-shield"/></svg><span>Governance</span></button>
+      <button type="button" class="ib" data-act="open-duplicates" data-needs="run" title="Review possible duplicates of the selected run"><svg class="ic"><use href="#i-table"/></svg><span>Duplicates</span></button>
       <button type="button" class="ib" data-act="open-certificate" data-needs="run" title="Reconciliation certificate for the selected run"><svg class="ic"><use href="#i-cert"/></svg><span>Certificate</span></button>
       <span class="sep"></span>
       <button type="button" class="ib" data-act="keys" title="Gemini API key stack"><svg class="ic"><use href="#i-key"/></svg><span>Keys</span></button>
@@ -140,6 +147,7 @@
         <div class="wz-desc" id="wz-desc"></div>
         <div class="wz-body" id="wz-body"></div>
       </div>
+      <aside class="wz-guide" id="wz-guide" aria-label="Setup guide"></aside>
     </div>
     <div class="wz-error hidden" id="wz-error" role="alert"></div>
     <div class="wz-foot">
@@ -154,6 +162,7 @@
   <script src="/static/js/common.js"></script>
   <script src="/static/js/keys.js"></script>
   <script src="/static/js/console.js"></script>
+  <script src="/static/js/guide.js"></script>
   <script src="/static/js/wizard.js"></script>
 </body>
 </html>

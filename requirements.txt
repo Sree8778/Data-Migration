@@ -23,10 +23,12 @@ oracledb>=2.0
 python-tds>=1.15
 pyOpenSSL>=24.0,<26   # python-tds calls X509.get_extension, which pyOpenSSL 26 removed (host-name check of Azure certificates)
 PyMySQL>=1.1
+pymongo>=4.7             # MongoDB documents as a read-only source
 certifi>=2024.0
 cryptography>=42.0
 
 # remote file storage connectors
 azure-storage-blob>=12.19
 boto3>=1.34
+google-cloud-firestore>=2.16   # Google Firebase (Firestore) as a read-only source
 paramiko>=3.4

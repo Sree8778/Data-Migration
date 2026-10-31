@@ -55,6 +55,19 @@ class SourceLandingError(ValueError):
     """The file cannot be landed as asked (unreadable, wrong layout, control total mismatch...)."""
 
 
+_PATH = re.compile(r"""(?:[A-Za-z]:)?[\\/](?:[\w .~$@-]+[\\/])+[\w .~$@-]*""")
+
+
+def _clean_error(exc: Exception) -> str:
+    """The reader's first error line without the server's temp paths (they mean nothing to the user), and a plain hint for the cryptic ones."""
+    text = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+    if "sniffing" in text:
+        return "the delimiter, quoting or encoding could not be worked out (an unbalanced quote or a binary file renamed to .csv is the usual cause)"
+    if "maximum line size" in text.lower() or "CSV Error on Line" in text:
+        return "a row is malformed or longer than 2 MB (a single cell larger than that, or an unbalanced quote swallowing the following rows)"
+    return _PATH.sub("<file>", text)[:240]
+
+
 # ---------------------------------------------------------------------- small helpers
 def sha256_of(path: Path) -> str:
     digest = hashlib.sha256()
@@ -153,40 +166,46 @@ def _cell_text(value: Any) -> Optional[str]:
     return str(value)
 
 
+_INFER_BATCH = 25   # columns per query: one query with 6 aggregates for every column of a 600-column file takes minutes to plan
+
+
 def infer_types(parquet: Path, memory_limit_mb: int = DEFAULT_MEMORY_LIMIT_MB) -> dict[str, str]:
-    """Infer a type per all-text column in ONE vectorised pass. Values with leading zeros stay VARCHAR."""
+    """Infer a type per all-text column, a few columns per vectorised pass. Values with leading zeros stay VARCHAR."""
+    src = lit(parquet.as_posix())
     with bounded_connection(memory_limit_mb) as con:
-        names = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet({lit(parquet.as_posix())})").fetchall()]
-        aggs = []
-        for n in names:
-            v = f"nullif(trim({q(n)}), '')"
-            aggs += [
-                f"count({v})",
-                f"count_if(regexp_full_match({v}, '-?(0|[1-9][0-9]{{0,17}})'))",
-                f"count_if(regexp_full_match({v}, '-?(0|[1-9][0-9]*)[.][0-9]+'))",
-                f"count_if(regexp_full_match({v}, '[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}') AND TRY_CAST({v} AS DATE) IS NOT NULL)",
-                f"count_if(regexp_full_match({v}, '[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}[ T][0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}}([.][0-9]+)?') "
-                f"AND TRY_CAST({v} AS TIMESTAMP) IS NOT NULL)",
-                f"count_if(lower({v}) IN ('true', 'false'))",
-            ]
-        row = con.execute(f"SELECT {', '.join(aggs)} FROM read_parquet({lit(parquet.as_posix())})").fetchone()
-    result = {}
-    for i, n in enumerate(names):
-        nn, ints, decs, dates, stamps, bools = row[i * 6 : i * 6 + 6]
-        if nn == 0:
-            result[n] = "VARCHAR"
-        elif ints == nn:
-            result[n] = "BIGINT"
-        elif ints + decs == nn:
-            result[n] = "DOUBLE"
-        elif dates == nn:
-            result[n] = "DATE"
-        elif stamps == nn:
-            result[n] = "TIMESTAMP"
-        elif bools == nn:
-            result[n] = "BOOLEAN"
-        else:
-            result[n] = "VARCHAR"
+        names = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet({src})").fetchall()]
+        result: dict[str, str] = {}
+        for start in range(0, len(names), _INFER_BATCH):
+            batch = names[start : start + _INFER_BATCH]
+            aggs = []
+            for n in batch:
+                v = f"nullif(trim({q(n)}), '')"
+                aggs += [
+                    f"count({v})",
+                    f"count_if(regexp_full_match({v}, '-?(0|[1-9][0-9]{{0,17}})'))",
+                    f"count_if(regexp_full_match({v}, '-?(0|[1-9][0-9]*)[.][0-9]+'))",
+                    f"count_if(regexp_full_match({v}, '[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}') AND TRY_CAST({v} AS DATE) IS NOT NULL)",
+                    f"count_if(regexp_full_match({v}, '[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}[ T][0-9]{{2}}:[0-9]{{2}}:[0-9]{{2}}([.][0-9]+)?') "
+                    f"AND TRY_CAST({v} AS TIMESTAMP) IS NOT NULL)",
+                    f"count_if(lower({v}) IN ('true', 'false'))",
+                ]
+            row = con.execute(f"SELECT {', '.join(aggs)} FROM read_parquet({src})").fetchone()
+            for i, n in enumerate(batch):
+                nn, ints, decs, dates, stamps, bools = row[i * 6 : i * 6 + 6]
+                if nn == 0:
+                    result[n] = "VARCHAR"
+                elif ints == nn:
+                    result[n] = "BIGINT"
+                elif ints + decs == nn:
+                    result[n] = "DOUBLE"
+                elif dates == nn:
+                    result[n] = "DATE"
+                elif stamps == nn:
+                    result[n] = "TIMESTAMP"
+                elif bools == nn:
+                    result[n] = "BOOLEAN"
+                else:
+                    result[n] = "VARCHAR"
     return result
 
 
@@ -339,7 +358,7 @@ class SourceLandingService:
             try:
                 cur = con.execute(f"SELECT * FROM {rel} LIMIT {int(rows)}")
             except duckdb.Error as exc:
-                raise SourceLandingError(f"cannot read the file: {str(exc).splitlines()[0][:240]}") from exc
+                raise SourceLandingError(f"cannot read the file: {_clean_error(exc)}") from exc
             names = [d[0] for d in cur.description]
             kinds = [d[1] for d in cur.description]
             out = []
@@ -420,7 +439,7 @@ class SourceLandingService:
                 select = ", ".join(f"{q(n)} AS {q(n if options.header else f'COLUMN_{i}')}" for i, n in enumerate(names, start=1))
                 con.execute(f"COPY (SELECT {select} FROM {rel}) TO {lit(parquet.as_posix())} (FORMAT parquet)")
             except duckdb.Error as exc:
-                raise SourceLandingError(f"cannot read the file as delimited text ({delimiter!r}, {encoding}): {str(exc).splitlines()[0][:240]}") from exc
+                raise SourceLandingError(f"cannot read the file as delimited text ({delimiter!r}, {encoding}): {_clean_error(exc)}") from exc
             rejected = int(con.execute("SELECT count(DISTINCT line) FROM reject_errors").fetchone()[0])
             if rejected:
                 sample = con.execute("SELECT line, error_type, error_message FROM reject_errors ORDER BY line LIMIT 5").fetchall()
@@ -537,13 +556,18 @@ class SourceLandingService:
                     if any(tag in str(kind) for tag in ("STRUCT", "LIST", "MAP", "[]")):
                         nested.append(name)
                         parts.append(f"CAST(to_json({q(name)}) AS VARCHAR) AS {q(name)}")
+                    elif str(kind).upper() == "JSON":   # a key that is a number in one record and text in another: unwrap, or the text keeps its JSON quotes ("2")
+                        parts.append(f"json_extract_string({q(name)}, '$') AS {q(name)}")
                     else:
                         parts.append(f"CAST({q(name)} AS VARCHAR) AS {q(name)}")
                 con.execute(f"COPY (SELECT {', '.join(parts)} FROM {self._json_relation(data)}) TO {lit(parquet.as_posix())} (FORMAT parquet)")
             except duckdb.Error as exc:
-                raise SourceLandingError(f"cannot read the file as JSON: {str(exc).splitlines()[0][:240]}") from exc
+                raise SourceLandingError(f"cannot read the file as JSON: {_clean_error(exc)}") from exc
         if nested:
             warnings.append(f"nested column(s) {nested} were kept as JSON text; flatten them in a source view if their parts are needed")
+        if len(described) == 1 and nested:
+            warnings.append(f"the file holds a single field '{described[0][0]}' that is itself a list or object: the records are probably inside it "
+                            "(a wrapper such as {\"customers\": [...]}); unwrap the file so each record is a row")
         return 0
 
     # ---- fixed width
@@ -593,5 +617,5 @@ class SourceLandingService:
                 select = ", ".join(f"CAST({q(n)} AS VARCHAR) AS {q(n)}" for n in names)
                 con.execute(f"COPY (SELECT {select} FROM read_parquet({lit(data.as_posix())})) TO {lit(parquet.as_posix())} (FORMAT parquet)")
             except duckdb.Error as exc:
-                raise SourceLandingError(f"cannot read the file as Parquet: {str(exc).splitlines()[0][:240]}") from exc
+                raise SourceLandingError(f"cannot read the file as Parquet: {_clean_error(exc)}") from exc
         return 0

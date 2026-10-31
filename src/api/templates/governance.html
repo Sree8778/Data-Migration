@@ -19,6 +19,13 @@
     <button class="btn primary" id="load">Execute load</button>
     <a class="btn" href="/ui/certificate/{{ run_id }}">Reconciliation certificate</a>
   </div>
+  <section class="card" id="assistant" data-scope="run">
+    <h2>Ask about this run</h2>
+    <p class="muted">Ask in plain English, for example "why were records rejected?" or "which rejected records have no country?". The answer is built from the real data and every
+      figure in it is checked: if one is not in the data, the plain facts are shown instead. Customer records are shown to you here and are never sent to the AI.</p>
+    <div class="ask-row"><input id="ask-question" maxlength="500" placeholder="Ask a question..." autocomplete="off"> <button class="btn primary" id="ask-go">Ask</button></div>
+    <div id="ask-result"></div>
+  </section>
   <section class="card" id="delta-panel">
     <h2>Changes since an earlier run</h2>
     <p class="muted">Every run is checked against the whole population. This compares its valid records with an earlier run, on the SAP target fields, so a
@@ -31,7 +38,7 @@
   </section>
   <section class="card" id="db-delivery">
     <h2>Deliver to a database target</h2>
-    <p class="muted" id="db-hint">Creates a new table in an Oracle, SQL Server, PostgreSQL or MySQL database with the validated records. Same gate as every load: steward sign-off and no open critical defects.</p>
+    <p class="muted" id="db-hint">Creates a new table (Firestore: a new collection) in an Oracle, SQL Server, PostgreSQL, MySQL or Google Firebase (Firestore) database with the validated records. Same gate as every load: steward sign-off and no open critical defects.</p>
     <div class="grid form">
       <label>Target connection<select id="db-conn"></select></label>
       <label>Schema<input id="db-schema" maxlength="128" placeholder="connection default"></label>
@@ -44,6 +51,7 @@
       <div class="wide"><button class="btn" id="db-preview">Show table &amp; SQL</button> <button class="btn primary" id="db-load">Deliver</button></div>
     </div>
     <pre id="db-ddl" class="ddl hidden"></pre>
+    <ul id="db-checks" class="findings hidden"></ul>
     <div id="db-history"></div>
   </section>
   <section class="card">
@@ -90,4 +98,4 @@
   </section>
 </section>
 {% endblock %}
-{% block scripts %}<script src="/static/js/governance.js"></script><script src="/static/js/construction.js"></script>{% endblock %}
+{% block scripts %}<script src="/static/js/governance.js"></script><script src="/static/js/construction.js"></script><script src="/static/js/assistant.js"></script>{% endblock %}

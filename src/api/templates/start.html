@@ -1,10 +1,18 @@
 {% extends "base.html" %}
 {% block head %}<link rel="stylesheet" href="/static/css/console.css">{% endblock %}
 {% block content %}
+<div class="start-grid">
+<div class="start-main">
 <div class="hero">
   <h1>ERP Migration Accelerator</h1>
   <p>Move legacy customer data into SAP S/4HANA Business Partners, with a full audit trail.</p>
 </div>
+<section class="journey-box" aria-label="Your migration, step by step">
+  <h2>Your migration, step by step</h2>
+  <ol class="journey" id="journey"></ol>
+  <p class="journey-now" id="journey-now"></p>
+  <p class="journey-actions" id="journey-actions"></p>
+</section>
 <div class="bands">
   <div class="band">Welcome</div><div class="band">Support Center</div>
   <div class="col">
@@ -27,5 +35,8 @@
 </div>
 <div class="start-stats" id="stats"></div>
 <div class="start-foot">Segregation of duties, lineage and reconciliation are enforced for every run.</div>
+</div>
+<aside class="start-guide" id="start-guide" aria-label="Guide"></aside>
+</div>
 {% endblock %}
-{% block scripts %}<script src="/static/js/start.js"></script>{% endblock %}
+{% block scripts %}<script src="/static/js/guide.js"></script><script src="/static/js/start.js"></script>{% endblock %}

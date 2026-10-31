@@ -25,17 +25,34 @@ EDM = "http://schemas.microsoft.com/ado/2008/09/edm"
 
 TYPES = {
     "A_BusinessPartnerType": ("A_BusinessPartner", {"BusinessPartner": 10, "BusinessPartnerCategory": 1, "BusinessPartnerGrouping": 4, "OrganizationBPName1": 40,
-                                                     "OrganizationBPName2": 40, "SearchTerm1": 20, "YY1_LegacyKey_bus": 20},
-                              ["to_BusinessPartnerRole", "to_BusinessPartnerAddress", "to_Customer"]),
+                                                     "OrganizationBPName2": 40, "SearchTerm1": 20, "FirstName": 40, "LastName": 40, "YY1_LegacyKey_bus": 20},
+                              ["to_BusinessPartnerRole", "to_BusinessPartnerAddress", "to_Customer", "to_Supplier", "to_BusinessPartnerTaxNumber", "to_BusinessPartnerBank"]),
     "A_BusinessPartnerRoleType": ("A_BusinessPartnerRole", {"BusinessPartner": 10, "BusinessPartnerRole": 6}, []),
     "A_BusinessPartnerAddressType": ("A_BusinessPartnerAddress", {"BusinessPartner": 10, "AddressID": 10, "Country": 3, "StreetName": 60, "HouseNumber": 10,
-                                                                   "CityName": 40, "PostalCode": 10, "Region": 3, "Language": 2}, []),
+                                                                   "CityName": 40, "PostalCode": 10, "Region": 3, "Language": 2},
+                                   ["to_EmailAddress", "to_PhoneNumber", "to_FaxNumber"]),
+    "A_AddressEmailAddressType": ("A_AddressEmailAddress", {"AddressID": 10, "EmailAddress": 241}, []),
+    "A_AddressPhoneNumberType": ("A_AddressPhoneNumber", {"AddressID": 10, "PhoneNumber": 30, "PhoneNumberExtension": 10}, []),
+    "A_AddressFaxNumberType": ("A_AddressFaxNumber", {"AddressID": 10, "FaxNumber": 30, "FaxNumberExtension": 10}, []),
+    "A_BusinessPartnerTaxNumberType": ("A_BusinessPartnerTaxNumber", {"BusinessPartner": 10, "BPTaxType": 4, "BPTaxNumber": 20}, []),
+    "A_BusinessPartnerBankType": ("A_BusinessPartnerBank", {"BusinessPartner": 10, "BankIdentification": 4, "BankCountryKey": 3, "BankNumber": 15, "BankAccount": 18,
+                                                             "BankAccountHolderName": 60, "IBAN": 34}, []),
+    "A_SupplierType": ("A_Supplier", {"Supplier": 10}, ["to_SupplierCompany", "to_SupplierPurchasingOrg"]),
+    "A_SupplierCompanyType": ("A_SupplierCompany", {"Supplier": 10, "CompanyCode": 4, "ReconciliationAccount": 10, "PaymentTerms": 4, "PaymentMethodsList": 10}, []),
+    "A_SupplierPurchasingOrgType": ("A_SupplierPurchasingOrg", {"Supplier": 10, "PurchasingOrganization": 4, "PurchaseOrderCurrency": 5, "PaymentTerms": 4,
+                                                                 "IncotermsClassification": 3}, []),
     "A_CustomerType": ("A_Customer", {"Customer": 10}, ["to_CustomerCompany", "to_CustomerSalesArea"]),
     "A_CustomerCompanyType": ("A_CustomerCompany", {"Customer": 10, "CompanyCode": 4, "ReconciliationAccount": 10, "PaymentTerms": 4, "PaymentMethodsList": 10}, []),
     "A_CustomerSalesAreaType": ("A_CustomerSalesArea", {"Customer": 10, "SalesOrganization": 4, "DistributionChannel": 2, "Division": 2, "Currency": 5,
                                                          "IncotermsClassification": 3}, []),
 }
 VALID_ROLES = {"FLCU00", "FLCU01", "FLVN00", "FLVN01", "BUP001"}
+# navigation -> entity type it leads to, for checking the properties of a deep insert level by level
+NAV_TYPES = {"to_BusinessPartnerRole": "A_BusinessPartnerRoleType", "to_BusinessPartnerAddress": "A_BusinessPartnerAddressType", "to_Customer": "A_CustomerType",
+             "to_CustomerCompany": "A_CustomerCompanyType", "to_CustomerSalesArea": "A_CustomerSalesAreaType", "to_EmailAddress": "A_AddressEmailAddressType",
+             "to_PhoneNumber": "A_AddressPhoneNumberType", "to_FaxNumber": "A_AddressFaxNumberType", "to_BusinessPartnerTaxNumber": "A_BusinessPartnerTaxNumberType",
+             "to_BusinessPartnerBank": "A_BusinessPartnerBankType", "to_Supplier": "A_SupplierType", "to_SupplierCompany": "A_SupplierCompanyType",
+             "to_SupplierPurchasingOrg": "A_SupplierPurchasingOrgType"}
 
 
 class FakeGateway:
@@ -48,6 +65,7 @@ class FakeGateway:
         self.rename_property: dict[str, str] = {}
         self.max_length_override: dict[str, int] = {}
         self.partners: dict[str, dict] = {}
+        self.deep: dict[str, dict] = {}  # partner number -> the navigations (children) that came with the deep insert
         self.requests: list[tuple[str, str]] = []
         self._numbers = itertools.count(first_partner)
         self._faults: list[int] = []
@@ -147,10 +165,9 @@ class FakeGateway:
             body = request.read() and json.loads(request.read())
         except ValueError:
             return self._error(400, "/IWBEP/CM_MGW_RT/005", "Invalid JSON")
-        allowed = set(TYPES["A_BusinessPartnerType"][1]) | set(TYPES["A_BusinessPartnerType"][2])
-        for name in body:
-            if name not in allowed:
-                return self._error(400, "/IWBEP/CM_MGW_RT/021", f"Property '{name}' is invalid")
+        bad = self._unknown_property(body, "A_BusinessPartnerType")
+        if bad:
+            return self._error(400, "/IWBEP/CM_MGW_RT/021", f"Property '{bad}' is invalid")
         problems: list[tuple[str, str, str]] = []
         category = body.get("BusinessPartnerCategory")
         if category not in ("1", "2", "3"):
@@ -165,6 +182,19 @@ class FakeGateway:
         addresses = self._results(body.get("to_BusinessPartnerAddress"))
         if addresses and not addresses[0].get("Country"):
             problems.append(("R11/011", "Country is required in the address", "error"))
+        if category == "1" and not body.get("LastName"):
+            problems.append(("R11/013", "Last name is required for a person", "error"))
+        for address in addresses:
+            for mail in self._results(address.get("to_EmailAddress")):
+                if "@" not in mail.get("EmailAddress", ""):
+                    problems.append(("R11/014", "E-mail address is invalid", "error"))
+            if (address.get("to_EmailAddress") or address.get("to_PhoneNumber") or address.get("to_FaxNumber")) and not address.get("Country"):
+                problems.append(("R11/011", "Country is required in the address", "error"))
+        for bank in self._results(body.get("to_BusinessPartnerBank")):
+            if not bank.get("BankCountryKey"):
+                problems.append(("R11/015", "Bank country is required for bank details", "error"))
+        if body.get("to_Supplier") and not any(r.get("BusinessPartnerRole") in ("FLVN00", "FLVN01") for r in roles):
+            problems.append(("R11/016", "Vendor data needs a supplier role", "error"))
         external = body.get("YY1_LegacyKey_bus")
         if external and any(p.get("YY1_LegacyKey_bus") == external for p in self.partners.values()):
             problems.append(("R11/010", f"Business partner with external key {external} already exists", "error"))
@@ -173,7 +203,24 @@ class FakeGateway:
             return self._error(400, first[0], first[1], problems[1:] or None)
         number = str(next(self._numbers)).zfill(10)
         self.partners[number] = {"BusinessPartner": number, **{k: v for k, v in body.items() if not k.startswith("to_")}}
+        self.deep[number] = {k: v for k, v in body.items() if k.startswith("to_")}
         return httpx.Response(201, json={"d": self.partners[number]})
+
+    def _unknown_property(self, node: dict, type_name: str) -> Optional[str]:
+        """The first property (or navigation) of a deep-insert level that the entity type does not have, looking into every navigation."""
+        props, navs = TYPES[type_name][1], TYPES[type_name][2]
+        for name, value in node.items():
+            if name in navs:
+                target = NAV_TYPES[name]
+                children = self._results(value) if name != "to_Customer" and name != "to_Supplier" else [value]
+                for child in children:
+                    if isinstance(child, dict):
+                        bad = self._unknown_property(child, target)
+                        if bad:
+                            return bad
+            elif name not in props:
+                return name
+        return None
 
     @staticmethod
     def _results(value) -> list[dict]:

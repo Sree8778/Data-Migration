@@ -93,6 +93,14 @@ class SandboxSapClient:
             out.append(err("009", "Name 1 is required for an organization"))
         if rec.address and not rec.address.get("COUNTRY"):
             out.append(err("011", "Country is required in the address"))
+        if category == "1" and not rec.general.get("NAME_LAST"):
+            out.append(err("013", "Last name is required for a person"))
+        if rec.email and "@" not in rec.email.get("SMTP_ADDR", ""):
+            out.append(err("014", "E-mail address is invalid"))
+        if rec.bank and not rec.bank.get("BANKS"):
+            out.append(err("015", "Bank country is required for bank details"))
+        if (rec.vendor_company or rec.vendor_purchasing) and not any(r in ("FLVN00", "FLVN01") for r in rec.roles):
+            out.append(err("016", "Vendor data needs a supplier role"))
         bad_roles = [r for r in rec.roles if r not in VALID_ROLES]
         if bad_roles or not rec.roles:
             out.append(err("012", f"BP role {bad_roles or 'missing'} is not allowed"))
@@ -130,11 +138,19 @@ class SapConfig:
 # The OData property each SAP field travels as, per entity of API_BUSINESS_PARTNER. Shared with the diagnostics, which checks every one of these
 # names against the target system's own $metadata before anything is loaded.
 GENERAL_FIELDS = {"TYPE": "BusinessPartnerCategory", "BU_GROUP": "BusinessPartnerGrouping", "NAME_ORG1": "OrganizationBPName1",
-                  "NAME_ORG2": "OrganizationBPName2", "BU_SORT1": "SearchTerm1"}
+                  "NAME_ORG2": "OrganizationBPName2", "BU_SORT1": "SearchTerm1", "NAME_FIRST": "FirstName", "NAME_LAST": "LastName"}
 ADDRESS_FIELDS = {"COUNTRY": "Country", "STREET": "StreetName", "HOUSE_NUM1": "HouseNumber", "CITY1": "CityName", "POST_CODE1": "PostalCode",
                   "REGION": "Region", "LANGU": "Language"}
 COMPANY_FIELDS = {"BUKRS": "CompanyCode", "AKONT": "ReconciliationAccount", "ZTERM": "PaymentTerms", "ZWELS": "PaymentMethodsList"}
 SALES_FIELDS = {"VKORG": "SalesOrganization", "VTWEG": "DistributionChannel", "SPART": "Division", "WAERS": "Currency", "INCO1": "IncotermsClassification"}
+EMAIL_FIELDS = {"SMTP_ADDR": "EmailAddress"}
+PHONE_FIELDS = {"TEL_NUMBER": "PhoneNumber", "TEL_EXTENS": "PhoneNumberExtension"}
+FAX_FIELDS = {"FAX_NUMBER": "FaxNumber", "FAX_EXTENS": "FaxNumberExtension"}
+TAX_FIELDS = {"TAXTYPE": "BPTaxType", "TAXNUM": "BPTaxNumber"}
+BANK_FIELDS = {"BKVID": "BankIdentification", "BANKS": "BankCountryKey", "BANKL": "BankNumber", "BANKN": "BankAccount",
+               "KOINH": "BankAccountHolderName", "IBAN": "IBAN"}
+VENDOR_COMPANY_FIELDS = {"BUKRS": "CompanyCode", "AKONT": "ReconciliationAccount", "ZTERM": "PaymentTerms", "ZWELS": "PaymentMethodsList"}
+VENDOR_PURCHASING_FIELDS = {"EKORG": "PurchasingOrganization", "WAERS": "PurchaseOrderCurrency", "ZTERM": "PaymentTerms", "INCO1": "IncotermsClassification"}
 ROLE_FIELD = "BusinessPartnerRole"
 # entity set -> the OData properties we send to it (names as they appear in the service's $metadata)
 ENTITY_PROPERTIES = {
@@ -143,6 +159,13 @@ ENTITY_PROPERTIES = {
     "A_BusinessPartnerAddress": sorted(ADDRESS_FIELDS.values()),
     "A_CustomerCompany": sorted(COMPANY_FIELDS.values()),
     "A_CustomerSalesArea": sorted(SALES_FIELDS.values()),
+    "A_AddressEmailAddress": sorted(EMAIL_FIELDS.values()),
+    "A_AddressPhoneNumber": sorted(PHONE_FIELDS.values()),
+    "A_AddressFaxNumber": sorted(FAX_FIELDS.values()),
+    "A_BusinessPartnerTaxNumber": sorted(TAX_FIELDS.values()),
+    "A_BusinessPartnerBank": sorted(BANK_FIELDS.values()),
+    "A_SupplierCompany": sorted(VENDOR_COMPANY_FIELDS.values()),
+    "A_SupplierPurchasingOrg": sorted(VENDOR_PURCHASING_FIELDS.values()),
 }
 
 
@@ -156,7 +179,22 @@ def build_odata_payload(rec: BusinessPartnerRecord, external_id_field: Optional[
         body[external_id_field] = rec.bp_ext
     body["to_BusinessPartnerRole"] = {"results": [{ROLE_FIELD: r} for r in rec.roles]}
     if rec.address:
-        body["to_BusinessPartnerAddress"] = {"results": [pick(rec.address, ADDRESS_FIELDS)]}
+        address = pick(rec.address, ADDRESS_FIELDS)
+        for nav, source, mapping in (("to_EmailAddress", rec.email, EMAIL_FIELDS), ("to_PhoneNumber", rec.phone, PHONE_FIELDS), ("to_FaxNumber", rec.fax, FAX_FIELDS)):
+            if source:
+                address[nav] = {"results": [pick(source, mapping)]}
+        body["to_BusinessPartnerAddress"] = {"results": [address]}
+    if rec.tax:
+        body["to_BusinessPartnerTaxNumber"] = {"results": [pick(rec.tax, TAX_FIELDS)]}
+    if rec.bank:
+        body["to_BusinessPartnerBank"] = {"results": [pick(rec.bank, BANK_FIELDS)]}
+    supplier: dict[str, Any] = {}
+    if rec.vendor_company:
+        supplier["to_SupplierCompany"] = {"results": [pick(rec.vendor_company, VENDOR_COMPANY_FIELDS)]}
+    if rec.vendor_purchasing:
+        supplier["to_SupplierPurchasingOrg"] = {"results": [pick(rec.vendor_purchasing, VENDOR_PURCHASING_FIELDS)]}
+    if supplier:
+        body["to_Supplier"] = supplier
     customer: dict[str, Any] = {}
     if rec.company_code:
         customer["to_CustomerCompany"] = {"results": [pick(rec.company_code, COMPANY_FIELDS)]}

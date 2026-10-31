@@ -25,7 +25,10 @@ from src.api.schemas import (
 from src.api.views import mapping_detail, mapping_summary, parse_reasoning, rule_detail, run_preflight
 from src.schemas.exclusion import (
     ExclusionOverview, ExclusionRule, ExclusionRuleCount, ExclusionRuleInput, ExclusionSuggestion)
+from src.schemas.ai_assist import (
+    LookupApplyRequest, LookupApplyResult, LookupDraft, LookupDraftRequest, RuleSuggestion, SuggestRuleRequest)
 from src.schemas.preflight import PreflightReport
+from src.services.ai_assist import AssistError
 from src.services.row_exclusion import ExclusionError, apply_exclusions, preview_rule, suggest, validate_rule
 from src.db.enums import MappingStatus, RuleType, TargetType
 from src.db.models import CatColumn, CatDataSource, CatTable, MapFieldRule, MapTableRule
@@ -39,6 +42,8 @@ router = APIRouter(tags=["mapping"])
 @router.post("/mapping/generate/{source_table_id}", response_model=Union[GenerateResponse, JobStatus], status_code=201)
 def generate_mapping(
     source_table_id: int, response: Response, background: bool = False,
+    partner_side: str = Query("auto", pattern="^(auto|customer|supplier|both)$", description="which side of the business partner the source is: its customer data, its supplier data, or both. "
+                              "auto decides from the table and column names; the other side's SAP tables are then not offered to the model"),
     consistency_runs: Optional[int] = Query(None, ge=1, le=5, description="ask the model this many times per column and flag columns whose answers differ (default: the server setting)"),
     ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user),
 ):
@@ -50,7 +55,7 @@ def generate_mapping(
     anything beyond a few columns: a CPU-bound 7B model needs 1-2 minutes per column.
     """
     if not background:
-        report = ctx.mapping_orchestrator().generate_table_mapping_report(source_table_id, consistency_runs=consistency_runs)
+        report = ctx.mapping_orchestrator().generate_table_mapping_report(source_table_id, consistency_runs=consistency_runs, partner_side=partner_side)
         return GenerateResponse(
             mapping_set_id=report.mapping_set_id, report=report, mapping=mapping_detail(ctx, report.mapping_set_id))
 
@@ -63,7 +68,7 @@ def generate_mapping(
         if warm:
             job.message = "Loading the model"
             warm()
-        report = ctx.mapping_orchestrator().generate_table_mapping_report(source_table_id, progress=job.report, consistency_runs=consistency_runs)
+        report = ctx.mapping_orchestrator().generate_table_mapping_report(source_table_id, progress=job.report, consistency_runs=consistency_runs, partner_side=partner_side)
         return GenerateResponse(
             mapping_set_id=report.mapping_set_id, report=report,
             mapping=mapping_detail(ctx, report.mapping_set_id)).model_dump(mode="json")
@@ -170,6 +175,70 @@ def post_preflight(
     written to the run tables) and check the rules' structure. Every rule gets a measured pass rate; a lookup rule lists the legacy values
     it has no entry for. Works on any status, so an approver can re-check a submitted mapping."""
     return run_preflight(ctx, mapping_set_id, sample_rows, block_rate, warn_rate)
+
+
+# ------------------------------------------------------------------ the AI assistant: a rule for a missed column, drafted lookups
+def _assist(call):
+    try:
+        return call()
+    except AssistError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+
+
+def _table_of_set(ctx: AppContext, mapping_set_id: int) -> int:
+    with ctx.session_factory() as s:
+        mapping = s.get(MapTableRule, mapping_set_id)
+        if mapping is None:
+            raise NotFoundError(f"mapping set {mapping_set_id} does not exist")
+        return mapping.source_table_id
+
+
+@router.post("/mapping/{mapping_set_id}/suggest-rule", response_model=RuleSuggestion)
+def suggest_rule(mapping_set_id: int, body: SuggestRuleRequest, ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user)) -> RuleSuggestion:
+    """Ask the AI for a rule for ONE source column (one the first pass missed, say). The model sees a wider candidate list that leaves out targets
+    that already have a rule, plus your optional hint; it is asked several times and the most common answer is kept; the answer goes through the same
+    guardrails as every AI rule and is measured against the landed file (how many rows already hold valid SAP keys, how many fit). Nothing is saved:
+    accept the suggestion to create the rule, which still needs a human review."""
+    source = ctx.source_file(_table_of_set(ctx, mapping_set_id))
+    return _assist(lambda: ctx.ai_assist.suggest_rule(mapping_set_id, body.column, source, user, hint=body.hint, runs=body.runs))
+
+
+@router.post("/mapping/{mapping_set_id}/suggestions/{suggestion_id}/accept", response_model=RuleDetail, status_code=201)
+def accept_suggestion(mapping_set_id: int, suggestion_id: str, ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user)) -> RuleDetail:
+    rule_id = _assist(lambda: ctx.ai_assist.accept_suggestion(mapping_set_id, suggestion_id, user))
+    with ctx.session_factory() as s:
+        return rule_detail(s, s.get(MapFieldRule, rule_id))
+
+
+def _source_for_rule(ctx: AppContext, rule_id: int):
+    with ctx.session_factory() as s:
+        rule = s.get(MapFieldRule, rule_id)
+        if rule is None:
+            raise NotFoundError(f"field rule {rule_id} does not exist")
+        return ctx.source_file(s.get(MapTableRule, rule.mapping_set_id).source_table_id)
+
+
+@router.get("/mapping/rules/{rule_id}/lookup-draft", response_model=Optional[LookupDraft])
+def get_lookup_draft(rule_id: int, ctx: AppContext = Depends(get_ctx)) -> Optional[LookupDraft]:
+    """The last drafted lookup table of this value-mapping rule (null until one has been drafted)."""
+    return ctx.ai_assist.get_draft(rule_id)
+
+
+@router.post("/mapping/rules/{rule_id}/lookup-draft", response_model=LookupDraft)
+def draft_lookups(rule_id: int, body: LookupDraftRequest = LookupDraftRequest(), ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user)) -> LookupDraft:
+    """Draft the lookup table of a value-mapping rule from the most frequent legacy values in the landed file. Values that already are valid SAP keys, or
+    that a built-in synonym list knows, are translated without the model; the others are put to the model with the list of allowed keys, and a key that is
+    not on that list is discarded. Only possible where the system knows the SAP key list of the target's check table. Nothing is applied: approve entries
+    with .../apply."""
+    source = _source_for_rule(ctx, rule_id)
+    return _assist(lambda: ctx.ai_assist.draft_lookups(rule_id, source, user, runs=body.runs, limit=body.limit))
+
+
+@router.post("/mapping/rules/{rule_id}/lookup-draft/apply", response_model=LookupApplyResult)
+def apply_lookup_draft(rule_id: int, body: LookupApplyRequest, ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user)) -> LookupApplyResult:
+    """Write the entries the steward approved (optionally with the steward's own key instead of the proposal; any key must exist in the SAP key list).
+    The approver and the model that drafted them are recorded on the rule."""
+    return _assist(lambda: ctx.ai_assist.apply_draft(rule_id, body.accept, user, body.overrides))
 
 
 # ------------------------------------------------------------------ rows to leave out

@@ -22,7 +22,14 @@ from sqlalchemy.orm import Session, sessionmaker
 from src.api.exceptions import NotConfiguredError
 from src.services._duckdb_util import bounded_connection, lit
 from src.api.archive import MappingArchive
+from src.api.mapping_targets import MappingTargets
 from src.connectors.store import ConnectionStore
+from src.services.ai_assist import AiAssistService
+from src.services.audit_log import AuditLog
+from src.services.duplicate_review import DuplicateReview
+from src.services.quality_rules import QualityService
+from src.services.retention import RetentionService
+from src.services.stewardship import Notifier, TaskStore
 from src.services.db_loader_service import DbLoaderService
 from src.services.delta_service import DeltaService
 from src.api.jobs import JobManager
@@ -70,6 +77,7 @@ class AppContext:
         self.session_factory = session_factory
         sf = session_factory
         self.workspace = settings.workspace_dir
+        self.audit = AuditLog(self.workspace / "audit", settings.audit_hmac_key)   # tamper-evident trail of who did what (see services/audit_log)
         self.metadata = MetadataService(sf)
         self.profiler = ProfilerService(sf)
         self.lookups = LookupService(sf)
@@ -80,12 +88,18 @@ class AppContext:
         self.transformer = TransformationEngine(sf, self.lookups)
         self.executor = ExecutionOrchestrator(sf, self.transformer, DeduplicationEngine(), output_dir=self.workspace / "runs")
         self.preflight = MappingPreflightService(sf, self.transformer, self.validation, self.lookups)
+        self.ai_assist = AiAssistService(sf, self.mapping_orchestrator, self.lookups, self.workspace)
         self.reconciliation = ReconciliationService(sf)
         self.landing = SourceLandingService()
         self.archive = MappingArchive(self.workspace)
         self.exclusions = ExclusionStore(self.workspace)
+        self.mapping_targets = MappingTargets(self.workspace)   # which destination each mapping set is pointed at
         self.connections = ConnectionStore(self.workspace, allowed_hosts=settings.db_allowed_hosts)
         self.db_loader = DbLoaderService(sf)
+        self.tasks = TaskStore(self.workspace, Notifier(settings.notify_webhook))   # who fixes what, by when
+        self.duplicate_review = DuplicateReview(self.workspace)   # what people decided about possible duplicates; applied by every run of the table
+        self.quality = QualityService(self.workspace)   # data quality rule library and assessments (the history is the monitoring)
+        self.retention = RetentionService(sf, self.workspace)   # retention, erasure and legal hold of personal-data artefacts
         self.delta = DeltaService(self.db_loader)
         self.construction = ConstructionService(sf, self.workspace / "runs", self.validation, self.defects, self.governance)
         self._llm = llm_mapper
@@ -98,6 +112,44 @@ class AppContext:
         self._lock = threading.Lock()
         self._sandbox_next = 1000000001
         self.workspace.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------ maintenance
+    def run_maintenance(self, user: str = "system:maintenance") -> dict:
+        """The jobs nobody should have to remember: erase what is past the retention period (runs under legal hold are skipped) and remind the webhook about overdue tasks.
+        Each action is on the audit trail under the user `system:maintenance`."""
+        from src.services.audit_log import AuditUnavailable
+        out: dict = {"retention": None, "overdue_tasks": 0}
+        if self.settings.retention_days:
+            result = self.retention.sweep(self.settings.retention_days, user, dry_run=False)
+            out["retention"] = {"erased_runs": [e["run_id"] for e in result["erased"]], "skipped_under_hold": [s["run_id"] for s in result["skipped"]]}
+        out["overdue_tasks"] = len(self.tasks.remind())
+        try:
+            self.audit.append({"phase": "done", "user": user, "roles": ["system"], "method": "JOB", "path": "/maintenance", "status": 200, "outcome": "ok", "ids": {"erased_runs": ",".join(str(i) for i in (out["retention"] or {}).get("erased_runs", []))} or None})
+        except AuditUnavailable:
+            pass
+        return out
+
+    def start_maintenance(self) -> None:
+        """Run the maintenance job every MIGRATION_MAINTENANCE_HOURS hours in a daemon thread (off by default)."""
+        hours = self.settings.maintenance_hours
+        if hours <= 0 or getattr(self, "_maintenance_stop", None) is not None:
+            return
+        self._maintenance_stop = threading.Event()
+
+        def loop() -> None:
+            while not self._maintenance_stop.wait(hours * 3600):
+                try:
+                    self.run_maintenance()
+                except Exception:  # noqa: BLE001 - a failed run is tried again next time, and must never take the server down
+                    import logging
+                    logging.getLogger("migration.api").exception("maintenance job failed")
+
+        threading.Thread(target=loop, daemon=True, name="migration-maintenance").start()
+
+    def stop_maintenance(self) -> None:
+        stop = getattr(self, "_maintenance_stop", None)
+        if stop is not None:
+            stop.set()
 
     # ------------------------------------------------------------------ AI mapping stack (lazy)
     def mapping_orchestrator(self) -> MappingOrchestrator:

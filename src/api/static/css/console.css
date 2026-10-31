@@ -163,6 +163,7 @@ dialog.wizard[open] { display: grid; grid-template-rows: auto auto 1fr auto auto
 .pg input[type=text], .pg input[type=number], .pg select, .pg textarea { width: 100%; border: 0; background: transparent; padding: 2px 0; }
 .pg input:focus, .pg select:focus, .pg textarea:focus { outline: none; }
 .pg textarea { min-height: 56px; font: 12px/1.3 ui-monospace, Consolas, monospace; }
+.pg textarea.mask { -webkit-text-security: disc; }   /* a key pasted on screen is shown as dots */
 .pg-help { border: 1px solid #c9ced8; background: #f8f9fb; margin-top: 8px; padding: 6px 10px; min-height: 52px; }
 .pg-help strong { display: block; }
 .wz-actionrow { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 8px; }
@@ -187,3 +188,10 @@ dialog.wizard[open] { display: grid; grid-template-rows: auto auto 1fr auto auto
 
 .wz-crumbs { margin: -2px 0 6px; font-size: 12px; }
 .wz-crumbs a { color: #1d4ed8; }
+
+/* the Add Source wizard has a guide on the right while the person works through the steps */
+.wz-guide { display: none; min-height: 0; }
+dialog.wizard.has-guide { width: min(1240px, 97vw); height: min(720px, 95vh); }
+dialog.wizard.has-guide .wz-main { grid-template-columns: 160px minmax(0, 1fr) 350px; }
+dialog.wizard.has-guide .wz-guide { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+dialog.wizard.has-guide .wz-guide .guide { flex: 1 1 auto; height: auto; min-height: 0; }

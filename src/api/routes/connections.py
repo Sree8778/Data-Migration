@@ -77,6 +77,9 @@ PRESETS = [
                hint="Server: <name>.database.windows.net. Encryption is always on. Use a SQL login; Azure Active Directory sign-in is not supported yet."),
     PresetInfo(id="azure-postgresql", label="Azure Database for PostgreSQL", dialect="postgresql", port=5432, options={"sslmode": "require"},
                hint="Server: <name>.postgres.database.azure.com. Flexible Server: the user name is the plain login; Single Server: login@servername."),
+    PresetInfo(id="amazon-redshift", label="Amazon Redshift (PostgreSQL protocol)", dialect="postgresql", port=5439, options={"sslmode": "require"},
+               hint="Cluster endpoint: <name>.<id>.<region>.redshift.amazonaws.com. Redshift speaks the PostgreSQL protocol, so the PostgreSQL connector is used. "
+                    "NOT yet tested against a real Redshift cluster (only against PostgreSQL): run Test connection and import one small table first."),
     PresetInfo(id="azure-mysql", label="Azure Database for MySQL", dialect="mysql", port=3306, options={"ssl": True, "ssl_verify": True},
                hint="Server: <name>.mysql.database.azure.com. TLS is required and the server certificate is verified."),
 ]

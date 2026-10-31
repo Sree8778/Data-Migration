@@ -105,6 +105,7 @@ class MappingGenerationReport(BaseModel):
     model_name: str
     model_pinned: bool = True  # False when the model is an alias such as "...-latest" that its vendor can repoint
     consistency_runs: int = 1
+    partner_side: str = "customer"  # customer | supplier | both: which target tables the model was offered (the other side's tables are left out)
     proposals: list[ColumnProposal]
     skipped_unprofiled_columns: list[str] = Field(default_factory=list)
     unmapped_mandatory_targets: list[str] = Field(default_factory=list)

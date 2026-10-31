@@ -2,7 +2,7 @@
   "use strict";
   const { $, esc, api, run, badge, statusBadge, confBadge, pct } = App;
   const tableId = App.pageData("tableId");
-  let detail = null, filter = null, sets = [], preflight = null, exclusions = null;
+  let detail = null, filter = null, sets = [], preflight = null, exclusions = null, target = null, targets = [];
 
   // ---------------------------------------------------------------- mapping sets
   async function loadSets(selectId) {
@@ -19,6 +19,7 @@
   async function loadDetail(id) {
     detail = await run(() => api("GET", "/api/mapping/" + id));
     preflight = await api("GET", "/api/mapping/" + id + "/preflight").catch(() => null);   // null until a check has been run
+    target = await api("GET", "/api/mapping/" + id + "/target").catch(() => null);          // where the result is meant to go (null connection = SAP)
     filter = null; render();
     loadExclusions();
   }
@@ -103,10 +104,37 @@
   function preflightStale() {
     if (!preflight || !detail) return true;
     if ((preflight.exclusion_rules || []).join(",") !== (exclusions ? exclusions.rules.map((r) => r.rule_id) : []).join(",")) return true;
+    if (((preflight.destination && preflight.destination.connection) || "") !== ((target && target.connection) || "")) return true;     // the destination changed after the check
     const now = detail.rules.map((r) => r.rule_id + ":" + r.rule_type + ":" + r.lookup_count).sort().join(",");
     return preflight.rules.map((r) => r.rule_id + ":" + r.rule_type + ":" + r.lookup_count).sort().join(",") !== now;
   }
   const ruleCheck = (r) => (preflight && !preflightStale() ? preflight.rules.find((c) => c.rule_id === r.rule_id) : null);
+
+  // what the destination says about this delivery: the cost, in the plain; its blockers and warnings are in the list of findings below, with what to do
+  function destinationHtml(p) {
+    if (!p.destination) return "";
+    const info = p.destination.checks.filter((c) => c.level === "info");
+    return '<div class="destination"><h3>Destination: ' + esc(p.destination.label) + "</h3>" +
+      (info.length ? "<ul>" + info.map((c) => "<li>" + esc(c.message) + "</li>").join("") + "</ul>" : "") + "</div>";
+  }
+
+  async function loadTargets() {
+    targets = (await api("GET", "/api/connections?role=target").catch(() => [])) || [];
+    $("#target-select").innerHTML = '<option value="">SAP S/4HANA (default)</option>' +
+      targets.map((t) => '<option value="' + esc(t.name) + '">' + esc(t.label + " (" + t.name + ")") + "</option>").join("");
+    renderTarget();
+  }
+  function renderTarget() {
+    const sel = $("#target-select"), editable = detail && (detail.mapping.status === "DRAFT" || detail.mapping.status === "REJECTED");
+    sel.value = target && target.connection && targets.some((t) => t.name === target.connection) ? target.connection : "";
+    sel.disabled = !editable;
+  }
+  $("#target-select").addEventListener("change", () => run(async () => {
+    const r = await api("PUT", "/api/mapping/" + detail.mapping.mapping_set_id + "/target", { connection: $("#target-select").value || null });
+    target = r;
+    App.toast(r.connection ? "Destination: " + r.label + ". Run 'Check rules on sample' to see what it says." : "Destination: SAP S/4HANA (the default)");
+    renderPreflight(); renderTarget();
+  }));
 
   function renderPreflight() {
     const box = $("#preflight-panel");
@@ -119,9 +147,42 @@
       ' <span class="muted">' + (p.sampled
         ? "dry run on " + esc(App.num(p.sample_rows)) + " of " + esc(App.num(p.source_rows)) + " rows (the same rows every time): " + esc(pct(p.valid_rate, 0)) + " pass every rule"
         : "structure only, no sample could be run") + "; checked " + esc(new Date(p.checked_at).toLocaleString()) +
-      (p.models.length ? "; model " + esc(p.models.join(", ")) : "") + "</span></p>" +
-      (p.findings.length ? '<ul class="findings">' + p.findings.map((f) => "<li>" + badge(f.severity === "BLOCKER" ? "red" : "amber", f.severity) + " " + esc(f.message) + "</li>").join("") + "</ul>"
+      (p.models.length ? "; model " + esc(p.models.join(", ")) : "") + "</span></p>" + destinationHtml(p) +
+      (p.next_steps && p.next_steps.length ? '<div class="next-steps"><h3>What to do next</h3><ol>' + p.next_steps.map((t) => "<li>" + esc(t) + "</li>").join("") + "</ol></div>" : "") +
+      (p.findings.length ? '<ul class="findings">' + p.findings.map((f, i) => "<li>" + badge(f.severity === "BLOCKER" ? "red" : "amber", f.severity) + " " + esc(f.message) +
+        (f.next_step ? '<div class="what-to-do"><strong>What to do:</strong> ' + esc(f.next_step) + (ACTION_LABEL[f.action] ? ' <button class="btn small finding-action" type="button" data-i="' + i + '">' + esc(ACTION_LABEL[f.action]) + "</button>" : "") + "</div>" : "") +
+        "</li>").join("") + "</ul>"
         : '<p class="muted">Nothing to report.</p>');
+    box.querySelectorAll(".finding-action").forEach((b) => b.addEventListener("click", () => doFindingAction(p.findings[Number(b.dataset.i)])));
+    if (!stale && p.findings.length) {
+      box.insertAdjacentHTML("beforeend", '<div class="fixes"></div>');
+      api("GET", "/api/mapping/" + p.mapping_set_id + "/fixes?stored=true").then((fixes) => App.renderFixes(box.querySelector(".fixes"), fixes, (r) => App.studioRefresh(r.mapping_set_id))).catch(() => null);
+    }
+  }
+
+  // The button on a finding does the next step: it opens the rule (and, for a lookup, starts the AI draft), or presses the toolbar button that fixes it.
+  const ACTION_LABEL = { draft_lookups: "Open the rule and draft lookups with AI", edit_rule: "Open the rule", review_rules: "Open the first rule to review",
+    add_placeholders: "Add placeholders now", generate: "Add a manual rule" };
+  function openRule(ruleId, thenDraft) {
+    if (filter) { filter = null; renderRules(); }                                  // a column filter could be hiding the rule
+    const el = document.querySelector('#rules .rule[data-rule="' + ruleId + '"]');
+    if (!el) { App.toast("That rule is not on the screen: pick the mapping set again", true); return; }
+    const editor = el.querySelector(".rule-edit");
+    if (editor.classList.contains("hidden")) el.querySelector(".edit").click();
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.classList.add("pulse");
+    setTimeout(() => el.classList.remove("pulse"), 2500);
+    if (thenDraft) {
+      const draft = el.querySelector(".draft-lookups");
+      if (draft) draft.click(); else App.toast("This rule is not a value mapping yet: change its type to VALUE_MAPPING and save, then press 'Draft lookups with AI'");
+    }
+  }
+  function doFindingAction(f) {
+    if (f.action === "draft_lookups" && f.rule_id) return openRule(f.rule_id, true);
+    if (f.action === "edit_rule" && f.rule_id) return openRule(f.rule_id, false);
+    if (f.action === "review_rules" && f.rule_ids.length) return openRule(f.rule_ids[0], false);
+    if (f.action === "add_placeholders") return $("#placeholders").click();
+    if (f.action === "generate") return $("#add-rule-toggle").click();
   }
 
   // ---------------------------------------------------------------- rendering
@@ -140,6 +201,7 @@
     $("#run-pipeline").disabled = !(detail && detail.mapping.status !== "REJECTED" && !archived);
     $("#preflight").disabled = !detail;
     $("#add-rule-toggle").disabled = !draft;
+    renderTarget();
     $("#placeholders").disabled = !draft;
     renderLegacy(); renderRules(); renderPreflight();
   }
@@ -149,7 +211,9 @@
     $("#legacy").innerHTML = detail.source_columns.map((c) =>
       '<div class="legacy-col' + (filter === c.column_name ? " active" : "") + '" data-col="' + esc(c.column_name) + '" tabindex="0">' +
       '<span class="name">' + esc(c.column_name) + "</span> " + (c.missing_from_file ? badge("red", "not in the file") : "") + " " + (c.mapped ? badge("green", "mapped") : badge("gray", "unmapped")) +
+      (!c.mapped && !c.missing_from_file && detail.mapping.status === "DRAFT" ? ' <button class="btn small suggest" data-col="' + esc(c.column_name) + '" title="Ask the AI for a rule for this column">Suggest rule</button>' : "") +
       "<small>" + esc(c.data_type) + " | nulls " + esc(pct(c.null_ratio, 0)) + " | " + esc(c.sample_values.join(", ")) + "</small></div>").join("");
+    document.querySelectorAll(".legacy-col .suggest").forEach((btn) => btn.addEventListener("click", (e) => { e.stopPropagation(); openSuggest(btn.dataset.col); }));
     document.querySelectorAll(".legacy-col").forEach((el) => {
       const toggle = () => { filter = filter === el.dataset.col ? null : el.dataset.col; renderLegacy(); renderRules(); };
       el.addEventListener("click", toggle);
@@ -217,8 +281,13 @@
         '<label class="wide">Lookups as JSON, e.g. {"USA": "US"} (VALUE_MAPPING)<textarea name="lookups" spellcheck="false" placeholder="{}"></textarea></label>' +
         '<label>Note<input name="note" maxlength="300"></label>' +
         '<label><span><input type="checkbox" name="confirm"' + (rule.needs_review ? "" : " checked") + '> Confirm as reviewed</span></label>' +
-        '<div class="wide"><button class="btn primary save">Save rule</button></div></div>';
+        '<div class="wide"><button class="btn primary save">Save rule</button>' +
+        (rule.rule_type === "VALUE_MAPPING" && rule.source_column ? ' <button class="btn draft-lookups" title="The AI drafts the translations from the values in your file; you approve each one">Draft lookups with AI</button>' : "") + "</div>" +
+        '<div class="wide lookup-draft"></div></div>';
       box.querySelector(".save").addEventListener("click", () => saveRule(box, rule));
+      const dl = box.querySelector(".draft-lookups");
+      if (dl) dl.addEventListener("click", () => draftLookups(box, rule));
+      showSavedDraft(box, rule);
     }
   }
 
@@ -237,7 +306,90 @@
     });
   }
 
+  // ---------------------------------------------------------------- AI: suggest a rule for one column
+  function openSuggest(column) {
+    const panel = $("#suggest-panel");
+    panel.classList.remove("hidden");
+    panel.innerHTML = "<h2>AI suggestion for " + esc(column) + '</h2><div class="grid form"><label class="wide">What do you know about this column? (optional)<input id="sg-hint" maxlength="300" placeholder="e.g. this is the customer account group"></label>' +
+      '<label>Ask the model this many times<select id="sg-runs"><option>1</option><option>2</option><option selected>3</option><option>5</option></select></label>' +
+      '<div class="wide"><button class="btn primary" id="sg-run">Ask the AI</button> <button class="btn" id="sg-close">Close</button></div></div><div id="sg-result"></div>';
+    panel.scrollIntoView({ block: "nearest" });
+    $("#sg-close").addEventListener("click", () => panel.classList.add("hidden"));
+    $("#sg-run").addEventListener("click", () => run(async () => {
+      $("#sg-run").disabled = true; $("#sg-result").innerHTML = '<p class="muted"><span class="spinner"></span> Asking the model and measuring its answer against your file...</p>';
+      try {
+        const body = { column, runs: Number($("#sg-runs").value) }; const hint = $("#sg-hint").value.trim(); if (hint) body.hint = hint;
+        renderSuggestion(await api("POST", "/api/mapping/" + detail.mapping.mapping_set_id + "/suggest-rule", body), column);
+      } catch (e) { $("#sg-result").innerHTML = ""; throw e; } finally { $("#sg-run").disabled = false; }
+    }));
+  }
+
+  function renderSuggestion(s, column) {
+    const box = $("#sg-result"), ev = s.evidence;
+    if (s.outcome === "NO_MATCH") { box.innerHTML = '<p>' + badge("gray", "no match") + " " + esc(s.reasoning || "The model found no suitable SAP field.") + "</p>"; return; }
+    if (s.outcome === "ERROR") { box.innerHTML = "<p>" + badge("red", "no usable answer") + " " + esc(s.review_reasons.join("; ")) + "</p>"; return; }
+    box.innerHTML = '<div class="rule"><div class="rule-head"><div><strong>' + esc(column) + '</strong></div><div class="arrow">&rarr;</div><div><strong>' + esc(s.target_table) + "." + esc(s.target_column) + "</strong></div>" +
+      "<div>" + confBadge(s.confidence) + " " + badge("gray", s.rule_type) + " " + (s.acceptable ? "" : badge("red", "cannot be stored")) + "</div></div>" +
+      '<div class="rule-meta">' + (s.transformation_sql ? "<code>" + esc(s.transformation_sql) + "</code>" : "") + "<div>" + esc(s.reasoning || "") + "</div>" +
+      (s.review_reasons.length ? "<div>" + s.review_reasons.map((x) => badge("amber", x)).join(" ") + "</div>" : "") +
+      (ev ? "<div>Measured on your file: " + esc(App.num(ev.non_blank)) + " of " + esc(App.num(ev.rows)) + " rows have a value, " + esc(App.num(ev.distinct)) + " distinct" +
+        (ev.domain_valid_rate !== null ? "; " + esc(pct(ev.domain_valid_rate, 0)) + " already hold valid " + esc(ev.domain) + " keys" + (ev.top_invalid.length ? " (not valid: " + ev.top_invalid.slice(0, 3).map((x) => "<code>" + esc(x[0]) + "</code> " + esc(App.num(x[1]))).join(", ") + ")" : "") : "") +
+        (ev.length_fit_rate !== null ? "; " + esc(pct(ev.length_fit_rate, 0)) + " fit the " + esc(ev.target_length) + " characters of the target" : "") + ".</div>" : "") +
+      '<div class="muted">model ' + esc(s.model_name) + ", asked " + esc(s.runs) + " time(s), " + esc(pct(s.agreement, 0)) + " agreed" + (s.alternatives.length ? "; the others said " + esc(s.alternatives.join(", ")) : "") + "</div></div></div>" +
+      (s.acceptable ? '<p><button class="btn primary" id="sg-accept">Accept as a rule (it still needs a review)</button></p>' : "");
+    const accept = $("#sg-accept");
+    if (accept) accept.addEventListener("click", () => run(async () => {
+      const rule = await api("POST", "/api/mapping/" + detail.mapping.mapping_set_id + "/suggestions/" + s.suggestion_id + "/accept");
+      App.toast("Rule added for " + rule.source_column + (rule.rule_type === "VALUE_MAPPING" ? ": now draft its lookups from the rule's Edit panel" : ""));
+      $("#suggest-panel").classList.add("hidden"); await loadDetail(detail.mapping.mapping_set_id);
+    }));
+  }
+
+  // ---------------------------------------------------------------- AI: draft the lookups of a value-mapping rule
+  async function showSavedDraft(box, rule) {
+    if (!rule.source_column || rule.rule_type !== "VALUE_MAPPING") return;
+    const saved = await api("GET", "/api/mapping/rules/" + rule.rule_id + "/lookup-draft").catch(() => null);
+    if (saved) renderDraft(box, rule, saved);
+  }
+
+  function draftLookups(box, rule) {
+    run(async () => {
+      const target = box.querySelector(".lookup-draft"), btn = box.querySelector(".draft-lookups");
+      btn.disabled = true; target.innerHTML = '<p class="muted"><span class="spinner"></span> Looking at the most frequent values in your file; the AI is asked only about the ones it cannot be certain of...</p>';
+      try { renderDraft(box, rule, await api("POST", "/api/mapping/rules/" + rule.rule_id + "/lookup-draft", {})); }
+      catch (e) { target.innerHTML = ""; throw e; } finally { btn.disabled = false; }
+    });
+  }
+
+  const METHOD = { valid_key: "already a valid key", synonym_list: "synonym list", ai: "AI", none: "no proposal" };
+  function renderDraft(box, rule, d) {
+    const cov = d.coverage, target = box.querySelector(".lookup-draft");
+    const covText = (n) => (cov.non_blank_rows ? pct(n / cov.non_blank_rows, 1) : "-");
+    target.innerHTML = '<h2>Drafted lookups for ' + esc(d.target) + "</h2>" +
+      '<p class="muted">Keys are checked against ' + esc(d.domain_note) + " (" + esc(d.domain_size) + " keys): a proposed key that is not on that list is discarded. Tick what you approve; nothing is written until you apply. Draft by " + esc(d.created_by) + ", model " + esc(d.model_name) + ".</p>" +
+      "<p>Rows covered by lookups now: <strong>" + esc(covText(cov.covered_now)) + "</strong>; with the pre-ticked entries: <strong>" + esc(covText(cov.covered_if_suggested)) + "</strong>; with every proposal: " + esc(covText(cov.covered_if_all)) +
+      (d.not_drafted ? ' <span class="muted">(' + esc(App.num(d.not_drafted)) + " rarer values were not drafted)</span>" : "") + "</p>" +
+      '<table class="draft"><thead><tr><th></th><th>Legacy value</th><th>Rows</th><th>Proposed key</th><th>How</th><th>Why</th></tr></thead><tbody>' + d.entries.map((e, i) =>
+        "<tr><td>" + (e.status === "approved" ? badge("green", "approved") : e.proposed ? '<input type="checkbox" class="pick" data-i="' + i + '"' + (e.suggested_accept ? " checked" : "") + ">" : "") + "</td><td><code>" + esc(e.legacy_value) + "</code></td><td>" + esc(App.num(e.rows)) + "</td>" +
+        "<td>" + (e.status === "approved" ? "<strong>" + esc(e.approved_key) + "</strong>" : '<input class="key" data-i="' + i + '" size="6" maxlength="10" value="' + esc(e.proposed || "") + '" placeholder="key">') + "</td>" +
+        "<td>" + badge(e.method === "none" ? "gray" : e.method === "ai" ? (e.agreement && e.confidence >= 0.85 ? "purple" : "amber") : "green", METHOD[e.method]) + (e.method === "ai" ? " " + esc(Math.round(e.confidence * 100)) + "%" : "") + "</td><td>" + esc(e.reason) + "</td></tr>").join("") +
+      '</tbody></table><p><button class="btn primary apply-draft">Apply the ticked entries</button></p>';
+    target.querySelector(".apply-draft").addEventListener("click", () => run(async () => {
+      const accept = [], overrides = {};
+      target.querySelectorAll(".pick:checked").forEach((c) => {
+        const e = d.entries[Number(c.dataset.i)], typed = target.querySelector('.key[data-i="' + c.dataset.i + '"]').value.trim();
+        accept.push(e.legacy_value); if (typed && typed !== e.proposed) overrides[e.legacy_value] = typed;
+      });
+      if (!accept.length) { App.toast("Tick at least one entry", true); return; }
+      const r = await api("POST", "/api/mapping/rules/" + rule.rule_id + "/lookup-draft/apply", { accept, overrides });
+      App.toast(r.applied + " lookup(s) written, approved by " + r.approved_by + "; " + (r.coverage.non_blank_rows ? pct(r.coverage.covered_now / r.coverage.non_blank_rows, 1) : "-") + " of the rows are now covered");
+      await loadDetail(detail.mapping.mapping_set_id);
+    }));
+  }
+
   // ---------------------------------------------------------------- actions
+  App.studioRefresh = (id) => loadSets(id || (detail && detail.mapping.mapping_set_id));
+  App.studioScope = () => ({ mapping_set_id: detail ? detail.mapping.mapping_set_id : null });
   $("#mapping-select").addEventListener("change", (e) => { if (e.target.value) loadDetail(Number(e.target.value)); });
   $("#show-archived").addEventListener("change", () => loadSets(detail && detail.mapping.mapping_set_id));
   $("#archive-mapping").addEventListener("click", () => run(async () => {
@@ -292,7 +444,7 @@
   $("#generate").addEventListener("click", () => run(async () => {
     $("#generate").disabled = true;
     const runs = $("#consistency").value;
-    const job = await api("POST", "/api/mapping/generate/" + tableId + "?background=true" + (runs ? "&consistency_runs=" + encodeURIComponent(runs) : ""));
+    const job = await api("POST", "/api/mapping/generate/" + tableId + "?background=true&partner_side=" + encodeURIComponent($("#side").value) + (runs ? "&consistency_runs=" + encodeURIComponent(runs) : ""));
     App.toast(job.already_running ? "An AI mapping job is already running; following it" : "AI mapping started");
     currentJob = job.job_id; showJob(job); poll(job.job_id);
   }));
@@ -366,5 +518,6 @@
     } finally { $("#run-pipeline").disabled = false; }
   }));
 
+  loadTargets();
   loadSets();
 })();

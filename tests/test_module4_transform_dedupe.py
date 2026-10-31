@@ -474,11 +474,18 @@ def test_exact_and_fuzzy_clusters_with_surviving_master(deduped, dataset):
     assert {s.master_pk for s in d.samples} and all(len(s.member_pks) == 2 for s in d.samples)
 
 
-def test_failed_records_are_excluded_from_deduplication(deduped, dataset):
+def test_failed_records_may_be_duplicates_but_never_the_master_of_a_good_group(deduped, dataset):
     report, rows = deduped
+    by_pk = {r["_SRC_PK"]: r for r in rows}
     failed = [r for r in rows if r["_TRANSFORM_STATUS"] == "FAILED"]
-    assert failed and report.deduplication.excluded_failed_rows == len(failed)
-    assert all(not r["is_duplicate_child"] and r["dedup_cluster_id"] is None for r in failed)
+    assert failed and report.deduplication.excluded_failed_rows == 0      # failed records take part: a failed twin of a good record needs no fixing
+    groups: dict = {}
+    for r in rows:
+        if r["dedup_cluster_id"] is not None:
+            groups.setdefault(r["dedup_cluster_id"], []).append(r)
+    for members in groups.values():
+        if any(m["_TRANSFORM_STATUS"] != "FAILED" for m in members):
+            assert by_pk[members[0]["surviving_master_pk"]]["_TRANSFORM_STATUS"] != "FAILED"
 
 
 def test_golden_record_tie_breaks_and_config_validation(tmp_path):

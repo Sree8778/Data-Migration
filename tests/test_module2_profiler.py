@@ -268,7 +268,7 @@ def test_save_profile_updates_catalog(catalog, profile, service, session_factory
     assert summary.columns_updated == 6
     assert summary.unmatched_profile_columns == ["CREDIT_LIMIT"]
     assert summary.catalog_columns_not_profiled == ["LEGACY_FLAG"]
-    assert summary.masked_sample_columns == ["EMAIL"]
+    assert summary.masked_sample_columns == ["EMAIL", "POSTAL_CODE"]   # POSTAL_CODE is recognised as address data by its name, without anyone classifying it
 
     with session_factory() as s:
         table = s.get(CatTable, catalog.id)
@@ -280,7 +280,10 @@ def test_save_profile_updates_catalog(catalog, profile, service, session_factory
             prof = _col(profile, name)
             assert cols[name].null_ratio == Decimal(str(prof.null_ratio)).quantize(Decimal("0.0001"))
             assert cols[name].distinct_ratio == Decimal(str(prof.distinct_ratio)).quantize(Decimal("0.0001"))
-            assert cols[name].sample_values == prof.sample_values
+            if name != "POSTAL_CODE":   # address data is recognised by its name and stored as a shape mask only
+                assert cols[name].sample_values == prof.sample_values
+        assert all(set(v) <= {"9", "a", "A", " ", "-"} for v in cols["POSTAL_CODE"].sample_values)
+        assert cols["POSTAL_CODE"].pii_classification.value == "RESTRICTED_PII" and cols["CUST_NAME"].pii_classification.value == "CONFIDENTIAL"
         assert cols["POSTAL_CODE"].null_ratio > Decimal("0.09")
         # PII: no raw e-mail address is stored, only its shape
         assert all("@" in v and "example" not in v for v in cols["EMAIL"].sample_values)
@@ -313,5 +316,5 @@ def test_module1_behaviour_unchanged_after_profiling(catalog, profile, service, 
     ProfilerService(session_factory).save_profile_to_catalog(catalog.id, profile)
     seed_sap_catalog(service)
     again = seed_sap_catalog(service)
-    assert again.tables == 6
-    assert len(service.get_target_dictionary().tables) == 6
+    assert again.tables == 13
+    assert len(service.get_target_dictionary().tables) == 13

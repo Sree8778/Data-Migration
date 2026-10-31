@@ -33,6 +33,7 @@ from src.db.models import CatColumn, CatDataSource, CatTable
 from src.services._duckdb_util import bounded_connection, lit, q
 
 DELIVERIES_FILE = "db_loads.json"
+PENDING_FILE = "db_loads_pending.json"   # written BEFORE a delivery starts and removed when it ends: still there = the server died in the middle
 KEY_COLUMN, RUN_COLUMN = "LEGACY_KEY", "MIG_RUN_ID"
 
 
@@ -89,8 +90,10 @@ class DbLoaderService:
             safe = self.safe_column_name(n, taken)
             taken.add(safe.lower())
             cols.append(ColumnDef(safe, "text", max(1, int(widths[n]))))
-        select_sql = (f'SELECT CAST("_SRC_PK" AS VARCHAR), {int(run_id)}, ' + ", ".join(f"CAST({q(n)} AS VARCHAR)" for n in targets + sources)
-                      + f" FROM read_parquet({lit(path.as_posix())}) ORDER BY 1")
+        def raw(name: str) -> str:                           # the legacy value as it was, except NUL: PostgreSQL cannot store it, so it is shown as the symbol
+            return f"regexp_replace(CAST({q(name)} AS VARCHAR), '\\x00', '␀', 'g')"
+        values = [f"CAST({q(n)} AS VARCHAR)" for n in targets] + [raw(n) for n in sources]
+        select_sql = f"SELECT {raw('_SRC_PK')}, {int(run_id)}, " + ", ".join(values) + f" FROM read_parquet({lit(path.as_posix())}) ORDER BY 1"
         return cols, select_sql, total
 
     @staticmethod
@@ -109,8 +112,12 @@ class DbLoaderService:
         cols, _, total = self.plan(valid_path, run_id, include_source_columns)
         name = connector.check_new_name(table)
         cols = [ColumnDef(connector.natural_case(c.name), c.kind, c.length, c.nullable) for c in cols]
+        checks: list[dict[str, str]] = []
+        if hasattr(connector, "destination_checks"):             # the destination's own rules, with the exact records of this run and a look at the target itself
+            from src.services.destination_checks import checks_for, key_statistics
+            checks = checks_for(connector, rows=total, key_stats=key_statistics(valid_path, 'CAST("_SRC_PK" AS VARCHAR)'), table=name, exact=True, check_target=True)
         return {"table": name, "rows": total, "columns": [{"name": c.name, "type": connector._type_sql(c), "nullable": c.nullable} for c in cols],
-                "ddl": connector.create_table_sql(schema, name, cols, [connector.natural_case(KEY_COLUMN)])}
+                "ddl": connector.create_table_sql(schema, name, cols, [connector.natural_case(KEY_COLUMN)]), "checks": checks}
 
     # ------------------------------------------------------------------ delivery
     def _rows(self, select_sql: str) -> Iterator[tuple]:
@@ -128,13 +135,26 @@ class DbLoaderService:
         cols, select_sql, total = self.plan(valid_path, run_id, include_source_columns)
         if total == 0:
             raise DbLoadError("the validated payload has no rows to deliver")
+        target = (connection_name, schema, connector.natural_case(table))
+        if any((p["connection"], p["schema"], p["table"]) == target for p in self.pending(run_dir)):
+            raise DbLoadError(f"an earlier delivery of run {run_id} into {schema}.{target[2]} did not finish (the server stopped while it was running), so nothing is known "
+                              f"about what that table holds. Look at the table, then POST /api/pipeline/recover-db/{run_id} with action 'adopt' (it holds exactly this run's "
+                              "records) or 'discard' (it does not); only then can this table be delivered again.")
         started = datetime.now(timezone.utc)
+        self._set_pending(run_dir, [*self.pending(run_dir), {
+            "run_id": run_id, "connection": connection_name, "dialect": connector.dialect, "host": connector.spec.host, "port": connector.spec.port,
+            "database": connector.spec.database, "schema": schema, "table": target[2], "mode": mode, "columns": len(cols),
+            "include_source_columns": include_source_columns, "valid_records": total, "started_by": user, "started_at": started.isoformat(timespec="seconds")}])
         rows = self._rows(select_sql)
         try:
             outcome = connector.load_table(schema, table, cols, [KEY_COLUMN], rows, mode=mode, batch_size=batch_size, expected_rows=total,
-                                           verify_values=verify_values)
+                                           verify_values=verify_values, owned_marker_columns=[KEY_COLUMN, RUN_COLUMN])
         except ConnectorError as exc:
+            self._clear_pending(run_dir, target)           # the load rolled back: nothing of it is in the target
             raise DbLoadError(str(exc)) from exc
+        except Exception:
+            self._clear_pending(run_dir, target)
+            raise
         finally:
             rows.close()                                         # releases the DuckDB connection and its temp folder now, even when the load failed halfway
         record = {
@@ -150,7 +170,82 @@ class DbLoaderService:
         history.append(record)
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / DELIVERIES_FILE).write_text(json.dumps(history, indent=1), encoding="utf-8")
+        self._clear_pending(run_dir, target)                      # only after the record is safely written: a crash in between is settled by 'recover'
         return record
+
+    # ------------------------------------------------------------------ deliveries that were interrupted
+    @staticmethod
+    def pending(run_dir: Path) -> list[dict[str, Any]]:
+        """Deliveries that started and have not ended: the server died in the middle of them, so the target table may hold anything."""
+        try:
+            return json.loads((run_dir / PENDING_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+
+    @staticmethod
+    def _set_pending(run_dir: Path, items: list[dict[str, Any]]) -> None:
+        path = run_dir / PENDING_FILE
+        if not items:
+            path.unlink(missing_ok=True)
+            return
+        run_dir.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(items, indent=1), encoding="utf-8")
+        tmp.replace(path)
+
+    def _clear_pending(self, run_dir: Path, target: tuple[str, str, str]) -> None:
+        self._set_pending(run_dir, [p for p in self.pending(run_dir) if (p["connection"], p["schema"], p["table"]) != target])
+
+    def recover(self, connector: Connector, run_id: int, valid_path: str | Path, run_dir: Path, connection_name: str, schema: str, table: str, user: str,
+                action: str) -> dict[str, Any]:
+        """Settle a delivery the server did not live to finish. `discard` only forgets the marker (the table is the operator's to deal with).
+        `adopt` compares the table with the run's validated payload value by value, exactly as `verify` does, and only when they are identical
+        records the delivery (marked as recovered); a table that holds anything else is refused."""
+        table = connector.natural_case(table)
+        target = (connection_name, schema, table)
+        entry = next((p for p in self.pending(run_dir) if (p["connection"], p["schema"], p["table"]) == target), None)
+        if entry is None:
+            raise DbLoadError(f"run {run_id} has no interrupted delivery into {schema}.{table} on connection '{connection_name}'")
+        if action == "discard":
+            self._clear_pending(run_dir, target)
+            return {"action": "discarded", "delivery": None}
+        existing = [d for d in self.deliveries(run_dir) if (d["connection"], d["schema"], d["table"]) == target and not d.get("rolled_back")]
+        if existing:                                              # the record was written and the server died just before the marker was removed
+            self._clear_pending(run_dir, target)
+            return {"action": "adopted", "delivery": existing[-1]}
+        include = bool(entry.get("include_source_columns"))
+        cols, select_sql, total = self.plan(valid_path, run_id, include)
+        names = [connector.natural_case(c.name) for c in cols]
+        key = connector.natural_case(KEY_COLUMN)
+        expected = Fingerprint(names, [names.index(key)])
+        rows = self._rows(select_sql)
+        try:
+            for row in rows:
+                expected.add(row)
+        finally:
+            rows.close()
+        try:
+            held = connector.fingerprint_table(schema, table, names, [key])
+        except ConnectorError as exc:
+            raise DbLoadError(f"{schema}.{table} cannot be compared with the run ({exc}); if the table is not there or is not this run's, choose 'discard'") from exc
+        differing = expected.differing_columns(held)
+        if differing or held.rows != expected.rows:
+            raise DbLoadError(f"{schema}.{table} does not hold exactly this run's validated records ({held.rows} row(s) there, {expected.rows} expected"
+                              + (f"; column(s) that differ: {', '.join(differing)}" if differing else "") + "), so it is not adopted; choose 'discard', clear the table, and deliver again")
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        record = {
+            "run_id": run_id, "connection": connection_name, "dialect": entry["dialect"], "host": entry["host"], "port": entry["port"], "database": entry["database"],
+            "schema": schema, "table": table, "mode": entry["mode"], "columns": len(cols), "include_source_columns": include, "valid_records": total,
+            "rows_loaded": held.rows, "rows_in_target": held.rows, "replaced_existing": False, "seconds": 0.0, "loaded_by": entry.get("started_by", user), "loaded_at": entry["started_at"],
+            "ddl": "", "values_verified": True, "cells_compared": expected.cells, "value_digest": held.digest, "recovered_after_interruption": True,
+            "verifications": [{"verified": True, "differing_columns": [], "rows_in_payload": expected.rows, "rows_in_target": held.rows, "cells_compared": expected.cells,
+                               "digest": held.digest, "checked_by": user, "checked_at": now}],
+        }
+        history = self.deliveries(run_dir)
+        history.append(record)
+        (run_dir / DELIVERIES_FILE).write_text(json.dumps(history, indent=1), encoding="utf-8")
+        self._clear_pending(run_dir, target)
+        return {"action": "adopted", "delivery": record}
 
     def verify(self, connector: Connector, run_id: int, valid_path: str | Path, run_dir: Path, connection_name: str, schema: str, table: str,
                user: str) -> dict[str, Any]:

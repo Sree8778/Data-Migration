@@ -28,7 +28,7 @@ from src.services.profiler_service import _mask_shape  # same shape mask as the 
 
 HIGH, MEDIUM = 0.85, 0.60  # confidence / health thresholds shared by badges everywhere
 # Identifiers that SAP or the loader generates; every other mandatory field, key fields included, must be supplied.
-GENERATED_KEYS = {"PARTNER", "KUNNR", "ADDRNUMBER", "RLTYP"}
+GENERATED_KEYS = {"PARTNER", "KUNNR", "LIFNR", "ADDRNUMBER", "RLTYP"}
 
 
 def band_for(score: float) -> Band:
@@ -183,9 +183,11 @@ def run_preflight(ctx: AppContext, mapping_set_id: int, sample_rows: int = 2000,
             raise NotFoundError(f"mapping set {mapping_set_id} does not exist")
         source_table_id = mapping.source_table_id
     unmapped = mapping_detail(ctx, mapping_set_id).unmapped_mandatory_targets
+    from src.services.destination_checks import destination_for_mapping
     report = ctx.preflight.check(
         mapping_set_id, ctx.source_file(source_table_id), sample_rows=sample_rows, block_rate=block_rate, warn_rate=warn_rate,
-        file_columns=ctx.file_columns(source_table_id), unmapped_mandatory=unmapped, exclusions=ctx.exclusions.rules(mapping_set_id))
+        file_columns=ctx.file_columns(source_table_id), unmapped_mandatory=unmapped, exclusions=ctx.exclusions.rules(mapping_set_id),
+        destination=destination_for_mapping(ctx, mapping_set_id, source_table_id))
     path = ctx.preflight_file(mapping_set_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(report.model_dump_json(indent=1), encoding="utf-8")

@@ -85,6 +85,67 @@
     (rows.length ? rows.map((r) => "<tr>" + r.map((c) => "<td>" + c + "</td>").join("") + "</tr>").join("")
       : '<tr><td colspan="' + heads.length + '" class="muted">Nothing to show.</td></tr>') + "</tbody></table>";
 
+  /* Proposals that wait for the person's approval. Each one says what is wrong, what is proposed, exactly what will change and what will not, how to undo it, and asks.
+     Nothing is done until "Yes, go ahead"; "No, not now" changes nothing and is recorded. A decision goes to the server with approved = true / false.
+     fixes: [{kind, title, situation, proposal, what_happens[], unchanged[], undo, question, mapping_set_id, rule_id, target, inputs[{name,label,suggestions[],hint}], editable_now}] */
+  App.renderFixes = (el, fixes, afterFix) => {
+    const { esc, api, run, badge } = App;
+    if (!fixes || !fixes.length) { el.innerHTML = ""; return; }
+    el.innerHTML = '<h2>Needs your approval</h2><p class="muted">I have not changed anything. Below, each proposal says what I found and what I would do. Read it, then tell me yes or no: nothing happens until you approve.</p>' +
+      fixes.map((f, i) => '<div class="card fix approval" data-i="' + i + '"><h3>' + esc(f.title) + "</h3>" +
+        (f.situation ? '<p><strong>The situation.</strong> ' + esc(f.situation) + "</p>" : "") +
+        (f.proposal ? '<p><strong>What I propose.</strong> ' + esc(f.proposal) + "</p>" : "") +
+        '<details><summary>Exactly what will change, what will not, and how to undo it</summary><p class="fix-label">What will change</p><ul>' + f.what_happens.map((t) => "<li>" + esc(t) + "</li>").join("") + "</ul>" +
+        (f.unchanged.length ? '<p class="fix-label">What will not change</p><ul>' + f.unchanged.map((t) => "<li>" + esc(t) + "</li>").join("") + "</ul>" : "") +
+        (f.undo ? '<p class="fix-label">How to undo it</p><p>' + esc(f.undo) + "</p>" : "") + "</details>" +
+        f.inputs.map((x, j) => '<label class="fix-input">' + esc(x.label) + ' <input class="fix-value" data-name="' + esc(x.name) + '" list="fixlist-' + i + "-" + j + '" autocomplete="off" placeholder="' + esc(x.hint) + '">' +
+          '<datalist id="fixlist-' + i + "-" + j + '">' + x.suggestions.map((v) => '<option value="' + esc(v) + '">').join("") + "</datalist></label>").join("") +
+        '<p class="fix-question"><strong>' + esc(f.question || "Do you approve?") + "</strong></p>" +
+        '<p><button class="btn primary fix-yes" type="button">Yes, go ahead</button> <button class="btn fix-no" type="button">No, not now</button> <span class="fix-copy">' +
+        (f.editable_now ? "" : badge("amber", "goes into a new editable copy")) + '</span></p><div class="fix-result"></div></div>').join("");
+    el.querySelectorAll(".fix").forEach((card) => {
+      const f = fixes[Number(card.dataset.i)], yes = card.querySelector(".fix-yes"), no = card.querySelector(".fix-no"), out = card.querySelector(".fix-result");
+      const send = (approved, override) => {
+        const values = {};
+        let missing = false;
+        card.querySelectorAll(".fix-value").forEach((x) => { values[x.dataset.name] = x.value.trim(); if (!x.value.trim()) missing = true; });
+        if (approved && missing) { App.toast("Tell me the value first, then approve", true); return; }
+        run(async () => {
+          yes.disabled = no.disabled = true;
+          out.innerHTML = approved ? '<p class="muted"><span class="spinner"></span> Approved. Working on it...</p>' : "";
+          try {
+            const r = await api("POST", "/api/mapping/fix", { kind: f.kind, mapping_set_id: f.mapping_set_id, rule_id: f.rule_id, target: f.target, values, approved, shown: f.title, override: !!override });
+            if (r.challenge) {                                  // the application disagrees: it did not do it, and says why
+              const c = r.challenge, warn = c.level === "warn";
+              out.innerHTML = '<div class="pushback ' + c.level + '"><p><strong>' + (warn ? "I disagree, so I have not done it yet." : "I will not do this.") + "</strong> " + esc(c.reason) + "</p>" +
+                "<p><strong>Why it matters.</strong> " + esc(c.why) + "</p>" + (c.suggestion ? "<p><strong>What I would do instead.</strong> " + esc(c.suggestion) + "</p>" : "") +
+                (warn ? '<p><button class="btn fix-insist" type="button">I have read that and still want it</button> <button class="btn fix-change" type="button">No, I will change my answer</button></p>' : "") + "</div>";
+              yes.disabled = no.disabled = false;
+              const insist = out.querySelector(".fix-insist"), change = out.querySelector(".fix-change");
+              if (insist) insist.addEventListener("click", () => send(true, true));
+              if (change) change.addEventListener("click", () => { out.innerHTML = ""; const v = card.querySelector(".fix-value"); if (v) v.focus(); });
+              App.toast("I disagree with that: " + c.reason, true);
+              return;
+            }
+            if (r.declined) { out.innerHTML = '<p>' + badge("gray", "not approved") + " <strong>Understood. I changed nothing</strong> and will not do this unless you ask again. Your decision is on the audit trail.</p>"; return; }
+            out.innerHTML = "<p>" + badge(r.ok ? "green" : "amber", r.ok ? "done, as you approved" : "nothing was changed") + " <strong>" + esc(r.message) + "</strong></p>" +
+              (r.changes.length ? '<ul class="findings">' + r.changes.map((c) => "<li>" + esc(c) + "</li>").join("") + "</ul>" : "") +
+              (r.needs_decision.length ? "<p><strong>Left for you to decide:</strong></p><ul class=\"findings\">" + r.needs_decision.map((c) => "<li>" + esc(c) + "</li>").join("") + "</ul>" : "") +
+              (r.next_step ? '<p class="muted">Next: ' + esc(r.next_step) + "</p>" : "");
+            if (!r.ok) { yes.disabled = no.disabled = false; }
+            if (r.copied_from) {                                  // the first fix made the draft copy: the others go into it, not into another copy
+              fixes.forEach((x, k) => { if (x.mapping_set_id === r.copied_from) { x.mapping_set_id = r.mapping_set_id; x.editable_now = true; el.querySelectorAll(".fix")[k].querySelector(".fix-copy").innerHTML = badge("green", "adds to draft #" + r.mapping_set_id); } });
+            }
+            App.toast(r.message, !r.ok);
+            if (afterFix) await afterFix(r);
+          } catch (e) { out.innerHTML = ""; yes.disabled = no.disabled = false; throw e; }
+        });
+      };
+      yes.addEventListener("click", () => send(true));
+      no.addEventListener("click", () => send(false));
+    });
+  };
+
   document.addEventListener("DOMContentLoaded", () => {
     const actor = App.$("#actor"), key = App.$("#apikey");
     if (actor) { actor.value = App.user(); actor.addEventListener("change", () => localStorage.setItem(KEY_USER, actor.value.trim())); }

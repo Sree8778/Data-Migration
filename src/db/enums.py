@@ -12,6 +12,8 @@ class SystemType(str, enum.Enum):
     MSSQL = "MSSQL"
     POSTGRESQL = "POSTGRESQL"
     MYSQL = "MYSQL"
+    MONGODB = "MONGODB"
+    FIRESTORE = "FIRESTORE"
     FLAT_FILE = "FLAT_FILE"
 
 

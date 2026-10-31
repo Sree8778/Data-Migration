@@ -7,7 +7,11 @@
   <button class="btn" id="generate">Generate AI mapping</button>
   <label class="muted" title="The model is asked this many times about every column. A column whose answers differ is flagged 'unstable' for a person to decide. 1 is fastest.">AI runs per column
     <select id="consistency"><option value="">server default</option><option value="1">1 (fastest)</option><option value="2">2</option><option value="3">3 (most careful)</option></select></label>
+  <label class="muted" title="Which side of the business partner this table is. Auto-detect looks at its name and columns; the other side's SAP tables are then not offered to the AI, so a customer table never gets a supplier field.">Source is
+    <select id="side"><option value="auto">auto-detect</option><option value="customer">customers</option><option value="supplier">suppliers</option><option value="both">customers and suppliers</option></select></label>
   <button class="btn" id="new-set">New empty mapping set</button>
+  <label class="muted" title="Where the result is meant to go. The pre-submission check then applies that destination's own rules (for Firebase: keys that can become document IDs, the free plan's quota). The default is SAP. Only a draft can change it.">Destination
+    <select id="target-select"><option value="">SAP S/4HANA (default)</option></select></label>
   <button class="btn" id="placeholders" title="Add a to-be-constructed rule for every mandatory SAP field that has no rule">Add placeholders for missing mandatory fields</button>
   <button class="btn" id="add-rule-toggle">Add manual rule</button>
   <span class="spacer"></span>
@@ -59,6 +63,14 @@
     <div class="wide"><button class="btn primary" type="submit">Add rule</button></div>
   </form>
 </div>
+<div id="suggest-panel" class="card hidden" aria-live="polite"></div>
+<section class="card" id="assistant" data-scope="mapping">
+  <h2>Ask about this mapping</h2>
+  <p class="muted">Ask in plain English, for example "which rules still need a review?" or "why are so many records rejected?". The answer is built from the real data, and every
+    figure in it is checked: if one is not in the data, the plain facts are shown instead. Customer records are never sent to the AI.</p>
+  <div class="ask-row"><input id="ask-question" maxlength="500" placeholder="Ask a question..." autocomplete="off"> <button class="btn primary" id="ask-go">Ask</button></div>
+  <div id="ask-result"></div>
+</section>
 <div class="split">
   <section class="card pane">
     <h2>Legacy columns</h2>
@@ -75,4 +87,4 @@
   </section>
 </div>
 {% endblock %}
-{% block scripts %}<script src="/static/js/studio.js"></script>{% endblock %}
+{% block scripts %}<script src="/static/js/studio.js"></script><script src="/static/js/assistant.js"></script>{% endblock %}

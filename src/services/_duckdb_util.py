@@ -17,6 +17,12 @@ def q(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+def fold(expression: str) -> str:
+    """The SQL twin of lookup_service.normalize_lookup_key (strip, upper-case): DuckDB upper-cases the German sharp s to the capital one (U+1E9E), Python to "SS", so without
+    this "Grossbritannien" written with a sharp s never finds its lookup entry."""
+    return f"replace(upper(trim({expression})), 'ẞ', 'SS')"
+
+
 def lit(text: str) -> str:
     """Quote an SQL string literal."""
     return "'" + text.replace("'", "''") + "'"

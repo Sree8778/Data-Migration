@@ -24,6 +24,13 @@ class BusinessPartnerRecord(_Model):
     address: dict[str, str] = Field(default_factory=dict)  # ADRC
     company_code: dict[str, str] = Field(default_factory=dict)  # KNB1
     sales_area: dict[str, str] = Field(default_factory=dict)  # KNVV
+    email: dict[str, str] = Field(default_factory=dict)  # ADR6
+    phone: dict[str, str] = Field(default_factory=dict)  # ADR2
+    fax: dict[str, str] = Field(default_factory=dict)  # ADR3
+    tax: dict[str, str] = Field(default_factory=dict)  # DFKKBPTAXNUM
+    bank: dict[str, str] = Field(default_factory=dict)  # BUT0BK
+    vendor_company: dict[str, str] = Field(default_factory=dict)  # LFB1
+    vendor_purchasing: dict[str, str] = Field(default_factory=dict)  # LFM1
     blocking_issues: list[str] = Field(default_factory=list)  # record cannot be migrated
     warnings: list[str] = Field(default_factory=list)  # data dropped / incomplete but non-blocking
 

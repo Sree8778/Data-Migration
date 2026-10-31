@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="muted">Join and filter tables you have already landed into one new source table. Describe it with the controls below; nothing is created until you press <strong>Create</strong>, and the preview is measured on your real data first.</p>
+<section class="card">
+  <h2>1. Tables</h2>
+  <div class="grid form">
+    <label>Start from (every record of this table is kept unless a filter or inner join removes it)<select id="base-table"></select></label>
+    <label>Compare join keys
+      <select id="match"><option value="trim_ci">ignoring blanks around them and upper/lower case</option><option value="trim">ignoring blanks around them</option><option value="exact">exactly as they are</option></select></label>
+  </div>
+  <div id="joins"></div>
+  <div class="toolbar"><button type="button" class="btn small" id="add-join">+ Add a table to join</button></div>
+</section>
+<section class="card">
+  <h2>2. Filters <span class="muted">(optional)</span></h2>
+  <div id="filters"></div>
+  <div class="toolbar"><button type="button" class="btn small" id="add-filter">+ Add a filter</button></div>
+</section>
+<section class="card">
+  <h2>3. Preview</h2>
+  <label class="check"><input type="checkbox" id="allow-fanout"> Allow a join that repeats records (otherwise it is refused)</label>
+  <div class="toolbar"><button type="button" class="btn primary" id="preview">Preview on my data</button></div>
+  <div id="result"></div>
+</section>
+<section class="card hidden" id="create-card">
+  <h2>4. Create the table</h2>
+  <div class="grid form">
+    <label>System name<input id="c-system" value="COMBINED" maxlength="128"></label>
+    <label>Table name<input id="c-table" maxlength="128" placeholder="CUSTOMER_WITH_TERMS"></label>
+    <label>Primary key column(s) <span class="muted">(names in the result, comma separated)</span><input id="c-keys" placeholder="CUST_ID"></label>
+    <div class="wide"><button type="button" class="btn primary" id="create">Create table</button></div>
+  </div>
+  <div id="created"></div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/js/combine.js"></script>{% endblock %}

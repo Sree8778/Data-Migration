@@ -7,13 +7,13 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 
 from src.api.context import AppContext
 from src.api.views import delta_report
 from src.api.deps import get_ctx, require_connection_admin, require_user
-from src.api.schemas import (DbLoadPreview, DbLoadRequest, DbLoadResult, DbRollbackRequest, DbRollbackResult, DbVerifyRequest, DbVerifyResult, LoadRequest, LoadResponse,
+from src.api.schemas import (JobStatus, DbPendingDelivery, DbRecoverRequest, DbRecoverResult, DbLoadPreview, DbLoadRequest, DbLoadResult, DbRollbackRequest, DbRollbackResult, DbVerifyRequest, DbVerifyResult, LoadRequest, LoadResponse,
                              PipelineRunRequest, PipelineRunResponse)
 from src.connectors.base import ConnectorError
 from src.connectors.dialects import connector_for
@@ -27,11 +27,12 @@ from src.services.sap_loader_service import SapLoaderService
 
 router = APIRouter(tags=["pipeline"])
 _NAME_COLUMN = "BUT000_NAME_ORG1"
-_ADDRESS_COLUMNS = ("ADRC_STREET", "ADRC_CITY1", "ADRC_POST_CODE1")
-# generic names plus the common SAP / ERP spellings (STCD1/STCEG = tax / VAT number, SMTP_ADDR = e-mail, TELF1 = phone)
-_TAX_COLUMN = re.compile(r"(^|_)(TAX|VAT|EIN|TIN|STCD\d?|STCEG|USTID|GSTIN|CNPJ|NIF)(_|$)", re.IGNORECASE)
-_EMAIL_COLUMN = re.compile(r"(^|_)(E_?MAIL|SMTP|MAIL)(_|$)", re.IGNORECASE)
-_PHONE_COLUMN = re.compile(r"(^|_)(PHONE|TEL|TELF\d?|TELEFON|TELEPHONE|MOBILE|HANDY)(_|$)", re.IGNORECASE)
+_ADDRESS_COLUMNS = ("ADRC_STREET", "ADRC_HOUSE_NUM1", "ADRC_CITY1", "ADRC_POST_CODE1")  # the house number is often its own legacy column; without it two sites on one street look alike
+# a word ends at '_' or '.' (a nested field of a document database is flattened to contact.email); generic names plus the common SAP / ERP spellings (STCD1/STCEG = tax / VAT number, SMTP_ADDR = e-mail, TELF1 = phone) and the national ones
+# (German UST / USTID / UST_IDNR / STEUERNR, French SIRET / SIREN / TVA, Italian PIVA / CODICE_FISCALE, Spanish CIF / NIE, Polish NIP, Australian ABN, Argentinian CUIT)
+_TAX_COLUMN = re.compile(r"(^|[_.])(TAX(ID|NO|NR|NUM|NUMBER)?|VAT(ID|NO|NR|NUM|NUMBER)?|EIN|TIN|STCD\d?|STCEG|UST(ID|IDNR|NR)?|STEUER(ID|NR|NUMMER)?|GSTIN|GST|CNPJ|NIF|CIF|NIE|NIP|SIRET|SIREN|TVA|PIVA|FISCALE|ABN|CUIT)([_.]|$)", re.IGNORECASE)
+_EMAIL_COLUMN = re.compile(r"(^|[_.])(E_?MAIL|SMTP|MAIL)([_.]|$)", re.IGNORECASE)
+_PHONE_COLUMN = re.compile(r"(^|[_.])(PHONE|TEL|TELF\d?|TELEFON|TELEPHONE|MOBILE|HANDY)([_.]|$)", re.IGNORECASE)
 
 
 def _columns_like(ctx: AppContext, source_table_id: int, pattern: re.Pattern) -> list[str]:
@@ -62,7 +63,7 @@ def _default_dedup(
             for c in (s.get(CatColumn, r.target_column_id)
                       for r in s.scalars(select(MapFieldRule).where(MapFieldRule.mapping_set_id == mapping_set_id)))
         }
-    keys = [ExactKey(name=f"tax_{c.lower()}", columns=[f"SRC_{c}"], normalizer="alnum") for c in tax_columns]
+    keys = [ExactKey(name=f"tax_{c.lower()}", columns=[f"SRC_{c}"], normalizer="alnum", vetoes_fuzzy=True) for c in tax_columns]
     keys += [ExactKey(name=f"email_{c.lower()}", columns=[f"SRC_{c}"], normalizer="email") for c in email_columns]
     keys += [ExactKey(name=f"phone_{c.lower()}", columns=[f"SRC_{c}"], normalizer="digits") for c in phone_columns]
     if _NAME_COLUMN not in staged and not keys:
@@ -81,16 +82,8 @@ def _legacy_columns(ctx: AppContext, mapping_set_id: int) -> list[str]:
     return list(dict.fromkeys(names))
 
 
-@router.post("/pipeline/run/{mapping_set_id}", response_model=PipelineRunResponse, status_code=201)
-def run_pipeline(
-    mapping_set_id: int, body: PipelineRunRequest = PipelineRunRequest(),
-    ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user),
-) -> PipelineRunResponse:
-    """Transform the uploaded extract with the mapping set, deduplicate, validate, record defects.
-
-    Allowed for DRAFT, SUBMITTED and APPROVED mapping sets (REJECTED is refused); loading is a
-    separate, gated step. Synchronous: sized for the dataset on the server's local disk.
-    """
+def _precheck(ctx: AppContext, mapping_set_id: int):
+    """The cheap refusals (unknown or archived mapping set, no landed file), so a background run reports them at once instead of as a failed job."""
     with ctx.session_factory() as s:
         mapping = s.get(MapTableRule, mapping_set_id)
         if mapping is None:
@@ -102,7 +95,11 @@ def run_pipeline(
     source = ctx.source_file(source_table_id)
     if source is None:
         raise HTTPException(409, f"no source file uploaded for table {source_table_id}")
+    return source_table_id, source
 
+
+def _execute_pipeline(ctx: AppContext, mapping_set_id: int, body: PipelineRunRequest, stage=lambda step, text: None) -> PipelineRunResponse:
+    source_table_id, source = _precheck(ctx, mapping_set_id)
     in_file = ctx.file_columns(source_table_id) or set()  # the catalog can still hold columns of an earlier layout
     tax_columns = [c for c in _tax_columns(ctx, source_table_id) if c.lower() in in_file]
     email_columns, phone_columns = (
@@ -111,7 +108,14 @@ def run_pipeline(
     dedup_config = None
     if body.deduplicate:
         dedup_config = body.dedup or _default_dedup(ctx, mapping_set_id, tax_columns, email_columns, phone_columns)
+    if dedup_config is not None and body.survivorship != "master_only":
+        dedup_config = dedup_config.model_copy(update={"survivorship": body.survivorship})
+    if dedup_config is not None:   # what people decided about possible duplicates of this table in earlier runs applies to this one
+        must, cannot = ctx.duplicate_review.pairs(source_table_id)
+        if must or cannot:
+            dedup_config = dedup_config.model_copy(update={"must_link": [*dedup_config.must_link, *must], "cannot_link": [*dedup_config.cannot_link, *cannot]})
 
+    stage(1, "Transforming" + (" and deduplicating" if dedup_config is not None else "") + " the records")
     run = ctx.executor.execute_run(
         mapping_set_id, source, body.wave_name, dedup_config, exclusions=ctx.exclusions.rules(mapping_set_id),
         passthrough_columns=list(dict.fromkeys(
@@ -125,14 +129,66 @@ def run_pipeline(
         shutil.copyfile(snapshot_file, run_dir / "source_snapshot.json")
     if dedup_config is not None:  # remembered so Data Construction can repeat deduplication after merging values
         (run_dir / "dedup_config.json").write_text(dedup_config.model_dump_json(), encoding="utf-8")
+    stage(2, "Validating against the SAP specification")
     validation = ctx.validation.validate(
         mapping_set_id, run.deduplicated_path or run.staging_path, run_dir / "validation", run_id=run.run_id)
     (run_dir / "validation.json").write_text(validation.model_dump_json(), encoding="utf-8")
+    stage(3, "Recording defects")
     defects = ctx.defects.record_defects(run.run_id, validation)
     return PipelineRunResponse(
         run_id=run.run_id, run=run, validation=validation, defects=defects,
         readiness=ctx.governance.evaluate_readiness(run.run_id),
         dedup_applied=run.deduplication is not None, dedup=run.deduplication)
+
+
+@router.post("/pipeline/run/{mapping_set_id}", response_model=PipelineRunResponse, status_code=201)
+def run_pipeline(
+    mapping_set_id: int, body: PipelineRunRequest = PipelineRunRequest(),
+    ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user),
+) -> PipelineRunResponse:
+    """Transform the uploaded extract with the mapping set, deduplicate, validate, record defects.
+
+    Allowed for DRAFT, SUBMITTED and APPROVED mapping sets (REJECTED is refused); loading is a
+    separate, gated step. Synchronous: fine for small files; for anything that takes more than a minute or two use
+    `POST /api/pipeline/run/{id}/background`, which returns at once and is polled.
+    """
+    return _execute_pipeline(ctx, mapping_set_id, body)
+
+
+@router.post("/pipeline/run/{mapping_set_id}/background", response_model=JobStatus, status_code=202)
+def run_pipeline_in_background(
+    mapping_set_id: int, response: Response, body: PipelineRunRequest = PipelineRunRequest(),
+    ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user),
+) -> JobStatus:
+    """The same run, queued as a job: returns at once (202; 200 when a run for this table is already queued or running) and is polled with
+    `GET /api/pipeline/jobs/{job_id}`; when it has succeeded, `result` is what the synchronous call would have returned. One run at a time:
+    further runs wait their turn. A queued job can be cancelled; one that is already running finishes (its engines cannot be interrupted
+    half-way), so it is never left half-written. If the server stops meanwhile, the run is marked FAILED when it starts again."""
+    source_table_id, _ = _precheck(ctx, mapping_set_id)
+
+    def work(job):
+        return _execute_pipeline(ctx, mapping_set_id, body, stage=job.step).model_dump(mode="json")
+
+    job, created = ctx.jobs.submit("pipeline", source_table_id, user, work)
+    response.status_code = 202 if created else 200
+    return JobStatus(**job.snapshot(), already_running=not created)
+
+
+@router.get("/pipeline/jobs/{job_id}", response_model=JobStatus)
+def get_pipeline_job(job_id: str, ctx: AppContext = Depends(get_ctx)) -> JobStatus:
+    job = ctx.jobs.get(job_id)
+    if job is None or job.kind != "pipeline":
+        raise NotFoundError(f"pipeline job {job_id} does not exist (jobs are forgotten when the server restarts)")
+    return JobStatus(**job.snapshot())
+
+
+@router.post("/pipeline/jobs/{job_id}/cancel", response_model=JobStatus)
+def cancel_pipeline_job(job_id: str, ctx: AppContext = Depends(get_ctx), user: str = Depends(require_user)) -> JobStatus:
+    job = ctx.jobs.get(job_id)
+    if job is None or job.kind != "pipeline":
+        raise NotFoundError(f"pipeline job {job_id} does not exist")
+    job.request_cancel()
+    return JobStatus(**job.snapshot())
 
 
 @router.post("/pipeline/load/{run_id}", response_model=LoadResponse)
@@ -272,6 +328,28 @@ def rollback_db_delivery(run_id: int, body: DbRollbackRequest, ctx: AppContext =
     except DbLoadError as exc:
         raise HTTPException(422, str(exc)) from exc
     return DbRollbackResult(schema_name=result.pop("schema"), **result)
+
+
+@router.get("/pipeline/load-db/{run_id}/pending", response_model=list[DbPendingDelivery])
+def list_pending_db_loads(run_id: int, ctx: AppContext = Depends(get_ctx)) -> list[DbPendingDelivery]:
+    """Deliveries of this run that started and never ended (the server stopped in the middle): the target table may hold anything until they are settled."""
+    keep = ("run_id", "connection", "table", "mode", "valid_records", "started_by", "started_at")
+    return [DbPendingDelivery(schema_name=p["schema"], **{k: v for k, v in p.items() if k in keep}) for p in ctx.db_loader.pending(ctx.run_dir(run_id))]
+
+
+@router.post("/pipeline/recover-db/{run_id}", response_model=DbRecoverResult)
+def recover_db_delivery(run_id: int, body: DbRecoverRequest, ctx: AppContext = Depends(get_ctx), user: str = Depends(require_connection_admin)) -> DbRecoverResult:
+    """Settle an interrupted delivery. `adopt`: the table is compared with the run's validated payload value by value and, only if identical, recorded as the
+    delivery (flagged as recovered); anything else is refused. `discard`: forget the marker so the table can be delivered again (what the table holds is then
+    the operator's to clean up)."""
+    connector, schema = _target_connector(ctx, body.connection, body.schema_name)
+    try:
+        result = ctx.db_loader.recover(connector, run_id, _validated_payload(ctx, run_id), ctx.run_dir(run_id), body.connection, schema, body.table_name, user, body.action)
+    except (ConnectorError, DbLoadError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    delivery = result["delivery"]
+    shown = DbLoadResult(schema_name=delivery["schema"], **{k: v for k, v in delivery.items() if k != "schema"}) if delivery else None
+    return DbRecoverResult(action=result["action"], delivery=shown)
 
 
 @router.get("/pipeline/load-db/{run_id}", response_model=list[DbLoadResult])
