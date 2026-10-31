@@ -12,7 +12,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import Iterable, Optional, Protocol
 
 import numpy as np
 from sqlalchemy import select
@@ -25,6 +25,8 @@ from src.schemas.mapping_ai import TargetCandidate
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 _BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
+
+GENERATED_KEYS = ("PARTNER", "KUNNR", "LIFNR", "ADDRNUMBER")
 
 class Encoder(Protocol):
     """Anything that turns texts into L2-normalised vectors (rows)."""
@@ -90,6 +92,30 @@ def normalise_identifier(name: str) -> str:
     return re.sub(r"[_\-\.\s]+", " ", spaced).strip().lower()
 
 
+# Legacy column names are written in abbreviations a language model does not connect to the words in a field's description ("cust" is not "customer" to it). The words are
+# added to the query beside the original, never instead of it.
+ABBREVIATIONS: dict[str, str] = {
+    "cust": "customer", "custno": "customer number", "kd": "customer", "kunde": "customer", "no": "number", "nr": "number", "num": "number", "nbr": "number", "id": "identifier number",
+    "addr": "address", "adr": "address", "strasse": "street", "str": "street", "strt": "street", "tel": "telephone", "phn": "phone", "ph": "phone", "mob": "mobile phone",
+    "ctry": "country", "cntry": "country", "cty": "city", "zip": "postal code", "pstl": "postal", "plz": "postal code", "nm": "name", "nme": "name", "curr": "currency", "ccy": "currency",
+    "pmt": "payment", "pay": "payment", "trm": "terms", "lang": "language", "lng": "language", "eml": "e-mail", "acct": "account", "acc": "account", "grp": "group", "cd": "code",
+    "typ": "type", "vend": "vendor supplier", "sup": "supplier", "vat": "tax number vat", "tin": "tax number", "ein": "tax number", "dt": "date", "desc": "description",
+    # German SAP-style names: a model that reads English descriptions does not connect "FIRMENNAME" to the organization name, or "UST_IDNR" to the VAT number
+    "firmenname": "company name organization name", "firma": "company organization name", "kundenname": "customer name organization name", "name1": "organization name 1",
+    "zusatz": "second name line additional name", "namenszusatz": "second name line additional name", "name2": "organization name 2 second name line",
+    "ust": "vat tax number", "idnr": "identification number", "ustid": "vat tax number", "ustidnr": "vat identification number tax number", "steuernummer": "tax number",
+    "steuer": "tax", "kundennummer": "customer number", "debitor": "customer", "hausnr": "house number", "hausnummer": "house number", "ort": "city", "stadt": "city",
+    "land": "country", "postleitzahl": "postal code", "mail": "e-mail address", "telefon": "telephone number", "sprache": "language", "waehrung": "currency",
+    "zahlungsbed": "payment terms", "zahlungsbedingung": "payment terms", "zahlungsbedingungen": "payment terms",
+}
+
+
+def expand_abbreviations(query: str) -> str:
+    """'cust id' -> 'cust id customer identifier number': the words behind the abbreviations, appended."""
+    extra = [ABBREVIATIONS[t] for t in query.split() if t in ABBREVIATIONS]
+    return query + (" " + " ".join(dict.fromkeys(extra)) if extra else "")
+
+
 class EmbeddingService:
     def __init__(
         self,
@@ -132,6 +158,7 @@ class EmbeddingService:
                 .where(
                     CatDataSource.target_type == TargetType.TARGET,
                     CatTable.business_object == self._object_name,
+                    CatColumn.column_name.not_in(GENERATED_KEYS),  # numbers SAP assigns are never mapped; they only crowd out the real candidates
                 )
                 .options(joinedload(CatColumn.table))
                 .order_by(CatTable.id, CatColumn.ordinal_position, CatColumn.id)
@@ -175,40 +202,67 @@ class EmbeddingService:
 
     # ------------------------------------------------------------------ retrieval
     def get_top_k_candidates(
-        self, source_column_name: str, source_data_type: str, top_k: int = 5, sample_values: Optional[list[str]] = None,
+        self, source_column_name: str, source_data_type: str, top_k: int = 5, sample_values: Optional[list[str]] = None, hint: Optional[str] = None,
+        exclude_tables: Optional[Iterable[str]] = None, must_include: Optional[Iterable[tuple[str, str]]] = None,
     ) -> list[TargetCandidate]:
         """Top-k target columns by cosine similarity (scores in [-1, 1], best first).
 
         Cryptic legacy names (ORT01, PSTLZ, LAND1) mean nothing to an embedding model, so a few sample values
         are appended to the query ("ort01, e.g. Berlin, Dresden"). They are embedded locally and never leave
-        the machine; values the PII policy masks arrive here already masked."""
+        the machine; values the PII policy masks arrive here already masked.
+
+        `hint` is a person's note about the column ("this is the customer account group"). A model can only choose among the candidates it is shown, so the hint
+        must steer the RETRIEVAL as well as the prompt: the hint alone and the name with the hint are ranked too, and their best matches come first.
+
+        `exclude_tables`: target tables that are not offered at all, for example the supplier tables when the source is a customer extract: a field that does not apply is
+        not a candidate, so the model cannot pick it however similar its description is.
+
+        `must_include`: (table, column) targets that are always among the candidates, in the last place if the ranking did not reach them: for a column the application can tell
+        is the customer key, the field the key belongs in must be offered however the similarity falls out."""
         if top_k < 1:
             raise ValueError("top_k must be >= 1")
         if self._matrix is None:
             self.build_index()
         # `source_data_type` is not embedded (see _IndexedColumn.document); it is part of the
         # LLM prompt, where type compatibility is judged.
-        query = normalise_identifier(source_column_name)
+        query = expand_abbreviations(normalise_identifier(source_column_name))
         samples = [str(v).strip() for v in (sample_values or []) if str(v).strip()][:5]
+
+        excluded = {t.upper() for t in (exclude_tables or ())}
+        allowed = [i for i, c in enumerate(self._columns) if c.table_name.upper() not in excluded]
 
         def ranking(text: str) -> tuple[list[int], np.ndarray]:
             scores = self._matrix @ self._encoder.encode([text], is_query=True)[0]  # rows are unit-length -> dot == cosine
             # Stable ordering: score desc, then catalog order, so results are reproducible.
-            return sorted(range(len(scores)), key=lambda i: (-float(scores[i]), i)), scores
+            return sorted(allowed, key=lambda i: (-float(scores[i]), i)), scores
 
         by_name, scores = ranking(query)
         order = by_name[:top_k]
+        rankings = [by_name]
+        hint = (hint or "").strip()[:300]
         if samples:  # interleave the name-only ranking with the sample-aware one: samples rescue cryptic names, names rescue odd samples
             by_samples, sample_scores = ranking(f"{query}, e.g. {', '.join(samples)}")
             scores = np.maximum(scores, sample_scores)
+            rankings.append(by_samples)
+        if hint:  # the person's own words come first
+            by_hint, hint_scores = ranking(hint)
+            by_name_hint, name_hint_scores = ranking(f"{query}, {hint}")
+            scores = np.maximum(scores, np.maximum(hint_scores, name_hint_scores))
+            rankings = [by_hint, by_name_hint, *rankings]
+        if len(rankings) > 1:
             order = []
-            for a_, b_ in zip(by_name, by_samples):
-                for i in (a_, b_):
-                    if i not in order:
-                        order.append(i)
+            for position in range(len(by_name)):
+                for ranked in rankings:
+                    if ranked[position] not in order:
+                        order.append(ranked[position])
                 if len(order) >= top_k:
                     break
             order = order[:top_k]
+        wanted = {(t.upper(), c.upper()) for t, c in (must_include or ())}
+        for i in allowed:                                       # pinned targets the similarity did not reach take the last place
+            c = self._columns[i]
+            if (c.table_name.upper(), c.column_name.upper()) in wanted and i not in order:
+                order = order[:max(0, top_k - 1)] + [i]
         return [
             TargetCandidate(
                 column_id=c.column_id,

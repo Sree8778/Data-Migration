@@ -39,7 +39,30 @@ from src.services.domain_provider import DomainProvider, default_domain_provider
 
 REVIEW_CONFIDENCE_THRESHOLD = 0.60
 MAX_SQL_LENGTH = 1000
+MAX_LENGTH_ARGUMENT = 4000   # no SAP text field is longer; LPAD(x, 2000000000, 'a') would build a 2 GB string for every row
+_LENGTH_FUNCS = tuple(getattr(exp, n) for n in ("Pad", "Left", "Right", "Substring") if hasattr(exp, n))
+_LENGTH_ANONYMOUS = {"LPAD", "RPAD", "SUBSTR"}
 SOURCE_PLACEHOLDER = "source_col"  # the prompt's generic name for the source column
+
+# Functions that change what a value SAYS, not only how it is typed or cut: padding adds characters, replacing and translating rewrite them. A model proposes these with a confident
+# reason ("German postal codes have 5 digits, so pad with zeros") that holds for the sample it saw and not for the whole column (4-digit Austrian and Swiss codes become wrong codes).
+_PADDING = {"Pad": "adds padding characters", "LPAD": "adds padding characters", "RPAD": "adds padding characters"}
+_REWRITING = {"Replace": "replaces characters", "RegexpReplace": "rewrites characters by pattern", "Translate": "swaps characters", "TRANSLATE": "swaps characters"}
+
+
+def content_changing_functions(sql: str, dialect: Optional[str] = None) -> list[str]:
+    """What the expression does to the values themselves, as phrases ("adds padding characters"); empty for a cast, a trim, a case change or a cut."""
+    try:
+        tree = sqlglot.parse_one(sql, read=dialect)
+    except SqlglotError:
+        return []
+    found: list[str] = []
+    for node in tree.walk():
+        name = str(node.name).upper() if isinstance(node, exp.Anonymous) else type(node).__name__
+        for table in (_PADDING, _REWRITING):
+            if name in table and table[name] not in found:
+                found.append(table[name])
+    return found
 
 
 def _classes(*names: str) -> tuple[type, ...]:
@@ -114,6 +137,15 @@ def validate_sql_expression(
                 errors.append(f"qualified column reference not allowed: {node.sql()}")
             elif allowed is not None and node.name.lower() not in allowed:
                 errors.append(f"unknown source column referenced: {node.name}")
+    for node in tree.walk():   # a literal length far beyond any SAP field is a resource attack or a mistake, never a mapping
+        takes_length = isinstance(node, _LENGTH_FUNCS) or (isinstance(node, exp.Anonymous) and str(node.name).upper() in _LENGTH_ANONYMOUS)
+        if not takes_length:
+            continue
+        args = [v for v in node.args.values() if isinstance(v, exp.Expression)] + [e for v in node.args.values() if isinstance(v, list) for e in v if isinstance(e, exp.Expression)]
+        for arg in args:
+            number = arg.this if isinstance(arg, exp.Literal) and not arg.is_string else None
+            if number is not None and number.lstrip("-").isdigit() and abs(int(number)) > MAX_LENGTH_ARGUMENT:
+                errors.append(f"length argument {number} is larger than {MAX_LENGTH_ARGUMENT}")
     if errors:
         return None, sorted(set(errors))
     return tree.sql(dialect=dialect), []
@@ -189,6 +221,11 @@ class RuleValidator:
         # Check 3: evidence from the source column's profile against the target's length and check table.
         if source is not None and target is not None:
             reasons += self._evidence_reasons(rec, target, source)
+        if rec.rule_type == "SQL_EXPRESSION" and sql_out:
+            changes = content_changing_functions(sql_out, self._dialect)
+            if changes:
+                reasons.append(f"the expression changes the values themselves ({' and '.join(changes)}), not only their type: check it against all the data, not just the sample "
+                               "(padding a postal code to 5 digits would turn a valid 4-digit code into a wrong one)")
 
         # Check 4: confidence.
         if rec.confidence_score < self._threshold:
